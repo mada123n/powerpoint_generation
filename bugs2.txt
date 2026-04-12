@@ -1,0 +1,29 @@
+1) Missing required-file preflight checks (hard crash on missing template/spec)
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:40-41, 725, 887
+   - Problem: The script assumes `Palette.pptx` and `AQA GCSE Chemistry Spec.PDF` exist. If they are missing, execution fails with raw traceback (e.g., `FileNotFoundError` from `zipfile.ZipFile`).
+   - Proposed fix: Validate required input files at startup (before generation/assembly). If missing, exit with a clear actionable message (which file is missing and where it should be placed).
+
+2) No handling for missing `pandoc` binary
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:865-871
+   - Problem: `subprocess.run(["pandoc", ...])` raises `FileNotFoundError` when pandoc is not installed, which is not caught. Users get an unhelpful crash.
+   - Proposed fix: Wrap pandoc invocation in try/except for `FileNotFoundError` and raise/exit with a friendly installation instruction.
+
+3) `extract_spec_section` can raise `IndexError` for malformed topic codes
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:882-885
+   - Problem: `parts = topic_code.split(".")` is used with `parts[1]` unguarded. Inputs not matching expected shape can crash.
+   - Proposed fix: Validate topic format early (e.g., regex like `^\d+\.\d+\.\d+(\.\d+)?$` or at least `len(parts) >= 3`) and return a user-facing validation error.
+
+4) Content schema validation is incomplete, allowing runtime failures later
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:740-745, 1184-1186, 1213-1224
+   - Problem: Only a minimal `'slides' is list` check is done for `--content`, and no equivalent validation is done for API-generated `content`. Malformed slide objects can trigger downstream exceptions or silently skipped output.
+   - Proposed fix: Add a centralized content validator called for both loaded and generated content (required top-level keys, slide object type, required keys per slide type, and helpful error messages).
+
+5) Assumes Anthropic response always contains `msg.content[0].text`
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1084, 1139
+   - Problem: If the API returns non-text blocks, an empty content array, or a different shape, code raises `IndexError`/`AttributeError`.
+   - Proposed fix: Safely extract first text block (iterate blocks and pick `type == "text"`), validate presence, and raise a clear error when missing.
+
+6) `--max-slides` accepts invalid values (0/negative)
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1168, 1093-1097
+   - Problem: Non-positive values are accepted and can produce nonsensical trimming/empty outlines instead of explicit validation failure.
+   - Proposed fix: Validate CLI argument with a positive-int type checker or explicit post-parse guard (`>= 1`) and fail fast with a clear message.
