@@ -804,36 +804,41 @@ def extract_research_section(research_path: Path, topic_code: str) -> str | None
     except ImportError:
         return None
 
-    escaped = re.escape(topic_code)
-    # Matches "4.1.1", "4.1.1.1", "4.1.1.2", etc.
-    topic_re     = re.compile(rf'^\s*{escaped}(\.\d+)*\b')
-    # Matches any numbered heading (used to detect the start of a different topic)
-    any_topic_re = re.compile(r'^\s*\d+\.\d+')
+    try:
+        escaped = re.escape(topic_code)
+        # Matches "4.1.1", "4.1.1.1", "4.1.1.2", etc.
+        topic_re     = re.compile(rf'^\s*{escaped}(\.\d+)*\b')
+        # Matches any numbered heading (used to detect the start of a different topic)
+        any_topic_re = re.compile(r'^\s*\d+\.\d+')
 
-    doc = Document(research_path)
-    collected = []
-    in_section = False
+        doc = Document(research_path)
+        collected = []
+        in_section = False
 
-    for para in doc.paragraphs:
-        is_heading = para.style.name.startswith("Heading")
-        text = para.text.strip()
-        if not text:
-            continue
+        for para in doc.paragraphs:
+            is_heading = para.style.name.startswith("Heading")
+            text = para.text.strip()
+            if not text:
+                continue
 
-        if is_heading:
-            if topic_re.match(text):
-                in_section = True
-                collected.append(f"\n{text}\n")
-            elif in_section and any_topic_re.match(text):
-                # Hit the next numbered topic — we're done
-                break
+            if is_heading:
+                if topic_re.match(text):
+                    in_section = True
+                    collected.append(f"\n{text}\n")
+                elif in_section and any_topic_re.match(text):
+                    # Hit the next numbered topic — we're done
+                    break
+                elif in_section:
+                    # A non-numbered sub-heading still inside our section
+                    collected.append(f"\n{text}\n")
             elif in_section:
-                # A non-numbered sub-heading still inside our section
-                collected.append(f"\n{text}\n")
-        elif in_section:
-            collected.append(text)
+                collected.append(text)
 
-    return "\n".join(collected) if collected else None
+        return "\n".join(collected) if collected else None
+
+    except Exception as e:
+        print(f"  ⚠  Could not parse research document ({e}); falling back to full document")
+        return None
 
 
 def load_research_text(research_path: Path, topic_code: str = None) -> str:
@@ -1040,9 +1045,17 @@ Full JSON:"""
 
 
 def strip_json_fences(text: str) -> str:
-    """Remove markdown code fences if Claude wrapped output in them."""
-    text = re.sub(r"^```(?:json)?\s*", "", text.strip())
-    text = re.sub(r"\s*```$", "", text)
+    """Extract the JSON object from Claude's response.
+
+    Uses brace-finding rather than regex fence-stripping so it handles:
+    - Responses with conversational preamble before the JSON block
+    - Responses where closing ``` was cut off due to max_tokens
+    - Responses with no fences at all
+    """
+    start_idx = text.find('{')
+    end_idx = text.rfind('}')
+    if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+        return text[start_idx:end_idx + 1]
     return text.strip()
 
 
@@ -1068,7 +1081,13 @@ def generate_outline(client, topic_code: str, topic_title: str,
         raise RuntimeError(
             "Outline response was cut off (hit max_tokens limit). "
             "The topic may be unusually large — try splitting it or reducing MAX_RESEARCH_CHARS.")
-    outline = json.loads(strip_json_fences(msg.content[0].text))
+    raw_text = strip_json_fences(msg.content[0].text)
+    try:
+        outline = json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        print("❌ Failed to parse outline JSON. The response may have been cut off mid-generation.")
+        print(f"   Raw extracted text (first 500 chars):\n{raw_text[:500]}...\n")
+        raise RuntimeError(f"Outline JSON parse failed: {e}") from e
 
     # Hard enforcement: trim to max_slides if Claude went slightly over
     slides = outline.get("slides", [])
@@ -1117,7 +1136,13 @@ def generate_content(client, outline: dict, research_path: Path) -> dict:
             "Content response was cut off (hit max_tokens limit). "
             "The outline may have too many slides — try approving a shorter outline, "
             "or reduce MAX_RESEARCH_CHARS.")
-    return json.loads(strip_json_fences(msg.content[0].text))
+    raw_text = strip_json_fences(msg.content[0].text)
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        print("❌ Failed to parse content JSON. The response may have been cut off mid-generation.")
+        print(f"   Raw extracted text (first 500 chars):\n{raw_text[:500]}...\n")
+        raise RuntimeError(f"Content JSON parse failed: {e}") from e
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1157,6 +1182,8 @@ def main():
     if args.content:
         print(f"📄 Loading content from {args.content} …")
         content = json.loads(Path(args.content).read_text(encoding="utf-8"))
+        if "slides" not in content or not isinstance(content["slides"], list):
+            sys.exit("❌ Content JSON is missing a 'slides' array. Check the file format.")
 
     else:
         if not args.research:
@@ -1188,6 +1215,7 @@ def main():
         # Optionally save content JSON
         if args.save_content:
             content_path = output_path.with_suffix(".content.json")
+            content_path.parent.mkdir(parents=True, exist_ok=True)
             content_path.write_text(json.dumps(content, indent=2), encoding="utf-8")
             print(f"  💾 Content saved to: {content_path}")
 
