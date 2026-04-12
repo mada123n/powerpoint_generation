@@ -1,0 +1,19 @@
+1) Unhandled .doc / invalid DOCX parsing crash in `extract_research_section`
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:802-805, 813
+   - Problem: The function only catches `ImportError`, but `Document(research_path)` can raise other exceptions (e.g., `.doc` input, corrupt/missing file). This crashes the run instead of returning `None` for fallback handling.
+
+2) `.doc` paths are treated as supported but can fail hard
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:847-851
+   - Problem: `load_research_text` includes `.doc` in supported suffixes and calls `extract_research_section`, but `python-docx` does not reliably support legacy `.doc` files. Combined with bug #1, this can terminate execution.
+
+3) Missing output directory creation before saving content JSON
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1189-1191
+   - Problem: With `--save-content`, `content_path.write_text(...)` is executed before any `mkdir` for the parent directory. If `Generated Presentations/` does not already exist, this raises `FileNotFoundError`.
+
+4) No validation of `--content` JSON schema before use
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:737, 740
+   - Problem: `build_powerpoint` assumes `content["slides"]` exists and is iterable. Malformed/pre-generated JSON without `slides` causes `KeyError`/runtime failure instead of a user-friendly validation error.
+
+5) Topic parsing can raise IndexError for malformed topic code
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:877-880
+   - Problem: `extract_spec_section` assumes `topic_code.split(".")` has at least two components and directly accesses `parts[1]`. Inputs not matching expected format can crash with `IndexError`.
