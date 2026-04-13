@@ -1196,6 +1196,8 @@ def validate_content_schema(content: dict, source_name: str) -> None:
         slide_type = slide.get("type")
         if not isinstance(slide_type, str) or not slide_type:
             raise ValueError(f"{where} has missing/invalid 'type'.")
+        if slide_type not in SLIDE_VARIANTS:
+            raise ValueError(f"{where} has unsupported type '{slide_type}'.")
 
         _require_fields(slide, ["title"], where)
 
@@ -1240,10 +1242,6 @@ def validate_content_schema(content: dict, source_name: str) -> None:
                 if not isinstance(q, dict):
                     raise ValueError(f"{where} question #{q_i} must be an object.")
                 _require_fields(q, ["question", "answer"], f"{where} question #{q_i}")
-        else:
-            if slide_type not in SLIDE_VARIANTS:
-                raise ValueError(f"{where} has unsupported type '{slide_type}'.")
-            raise ValueError(f"{where} has no schema validator for slide type '{slide_type}'.")
 
 
 def generate_outline(client, topic_code: str, topic_title: str,
