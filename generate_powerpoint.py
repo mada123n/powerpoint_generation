@@ -959,14 +959,16 @@ def extract_spec_section(topic_code: str) -> str:
         import pdfplumber
         text_pages = []
         in_section = False
+        if not re.fullmatch(r"\d+\.\d+\.\d+(?:\.\d+)?", topic_code):
+            print(
+                f"  ⚠  Topic code '{topic_code}' is malformed; expected format like "
+                f"'4.1.1' or '4.1.1.1'. Skipping spec extraction."
+            )
+            return ""
         parts = topic_code.split(".")
-        if len(parts) < 2:
-            print(f"  ⚠  Topic code '{topic_code}' has no sub-section — cannot build next-section pattern; extracting by keyword only.")
-            next_section_re = re.compile(r'(?!x)x')  # never matches
-        else:
-            # Pattern for next section at same level, e.g. 4.1.2 when we want 4.1.1
-            next_section_re = re.compile(
-                rf'{re.escape(parts[0])}\.{re.escape(parts[1])}\.\d+')
+        # Pattern for next section at same level, e.g. 4.1.2 when we want 4.1.1
+        next_section_re = re.compile(
+            rf'{re.escape(parts[0])}\.{re.escape(parts[1])}\.\d+')
 
         with pdfplumber.open(SPEC_PDF_PATH) as pdf:
             for page in pdf.pages:
@@ -1164,6 +1166,82 @@ def strip_json_fences(text: str) -> str:
     return text.strip()
 
 
+def _require_fields(slide: dict, required_fields: list[str], where: str) -> None:
+    missing = [f for f in required_fields if f not in slide]
+    if missing:
+        raise ValueError(f"{where} is missing required field(s): {', '.join(missing)}")
+
+
+def validate_content_schema(content: dict, source_name: str) -> None:
+    """Validate generated/loaded content before assembly."""
+    if not isinstance(content, dict):
+        raise ValueError(f"{source_name} must be a JSON object at top level.")
+    slides = content.get("slides")
+    if not isinstance(slides, list):
+        raise ValueError(f"{source_name} must contain a 'slides' array.")
+
+    question_min = {
+        "Assessment – Concepts (1 question)": 1,
+        "Assessment – Concepts (2 questions)": 2,
+        "Assessment – Concepts (3 questions)": 3,
+    }
+
+    for i, slide in enumerate(slides, start=1):
+        where = f"{source_name} slide #{i}"
+        if not isinstance(slide, dict):
+            raise ValueError(f"{where} must be an object.")
+
+        slide_type = slide.get("type")
+        if not isinstance(slide_type, str) or not slide_type:
+            raise ValueError(f"{where} has missing/invalid 'type'.")
+        if slide_type not in SLIDE_VARIANTS:
+            raise ValueError(f"{where} has unsupported type '{slide_type}'.")
+
+        _require_fields(slide, ["title"], where)
+
+        if slide_type == "Title Slide":
+            continue
+        if slide_type == "Concept Definition":
+            _require_fields(slide, ["definition", "bullets"], where)
+            if not isinstance(slide["bullets"], list):
+                raise ValueError(f"{where} field 'bullets' must be an array.")
+        elif slide_type in ("Concept Explanation – Short", "Concept Explanation – Long"):
+            _require_fields(slide, ["bullets"], where)
+            if not isinstance(slide["bullets"], list):
+                raise ValueError(f"{where} field 'bullets' must be an array.")
+        elif slide_type == "Concept Explanation With Example":
+            _require_fields(slide, ["bullets", "example"], where)
+            if not isinstance(slide["bullets"], list):
+                raise ValueError(f"{where} field 'bullets' must be an array.")
+        elif slide_type in ("Real-World Application – Short", "Real-World Application – Long"):
+            _require_fields(slide, ["examples"], where)
+            examples = slide["examples"]
+            if not isinstance(examples, list):
+                raise ValueError(f"{where} field 'examples' must be an array.")
+            for ex_i, ex in enumerate(examples, start=1):
+                if not isinstance(ex, dict):
+                    raise ValueError(f"{where} example #{ex_i} must be an object.")
+                _require_fields(ex, ["name", "description"], f"{where} example #{ex_i}")
+        elif slide_type == "Visual Explanation":
+            _require_fields(slide, ["bullets"], where)
+            if not isinstance(slide["bullets"], list):
+                raise ValueError(f"{where} field 'bullets' must be an array.")
+        elif slide_type == "Assessment – Calculations":
+            _require_fields(slide, ["example1", "example2"], where)
+        else:
+            _require_fields(slide, ["questions"], where)
+            questions = slide["questions"]
+            if not isinstance(questions, list):
+                raise ValueError(f"{where} field 'questions' must be an array.")
+            min_q = question_min.get(slide_type, 1)
+            if len(questions) < min_q:
+                raise ValueError(f"{where} requires at least {min_q} question(s).")
+            for q_i, q in enumerate(questions, start=1):
+                if not isinstance(q, dict):
+                    raise ValueError(f"{where} question #{q_i} must be an object.")
+                _require_fields(q, ["question", "answer"], f"{where} question #{q_i}")
+
+
 def generate_outline(client, topic_code: str, topic_title: str,
                      research_path: Path, max_slides: int = 25) -> dict:
     print("  Calling Claude API for outline …")
@@ -1290,6 +1368,11 @@ def main():
     parser.add_argument("--max-slides", type=positive_int, default=25,
                         help="Maximum number of slides in the outline (default: 25)")
     args = parser.parse_args()
+    if not re.fullmatch(r"\d+\.\d+\.\d+(?:\.\d+)?", args.topic):
+        sys.exit(
+            "❌ Invalid --topic format. Expected digits separated by dots, e.g. "
+            "'4.1.1' or '4.1.1.1'."
+        )
 
     # Determine output path
     topic_safe   = args.topic.replace(".", "_")
@@ -1302,6 +1385,11 @@ def main():
             f"❌ Template file not found: {PALETTE_PATH}\n"
             f"   Place 'Palette v2.pptx' in the same folder as this script."
         )
+    if not args.content and not SPEC_PDF_PATH.exists():
+        sys.exit(
+            f"❌ Spec PDF not found: {SPEC_PDF_PATH}\n"
+            f"   Place 'AQA GCSE Chemistry Spec.PDF' in the same folder as this script."
+        )
 
     print(f"\n🔬  GCSE Chemistry PowerPoint Generator")
     print(f"    Topic  : {args.topic}{(' – ' + args.title) if args.title else ''}")
@@ -1311,8 +1399,10 @@ def main():
     if args.content:
         print(f"📄 Loading content from {args.content} …")
         content = json.loads(Path(args.content).read_text(encoding="utf-8"))
-        if "slides" not in content or not isinstance(content["slides"], list):
-            sys.exit("❌ Content JSON is missing a 'slides' array. Check the file format.")
+        try:
+            validate_content_schema(content, "--content JSON")
+        except ValueError as e:
+            sys.exit(f"❌ Invalid content JSON: {e}")
 
     else:
         if not args.research:
@@ -1340,6 +1430,10 @@ def main():
 
         # Call 2: Generate full content
         content = generate_content(client, outline, research_path)
+        try:
+            validate_content_schema(content, "generated content")
+        except ValueError as e:
+            sys.exit(f"❌ Generated content failed validation: {e}")
 
         # Optionally save content JSON
         if args.save_content:
@@ -1350,127 +1444,6 @@ def main():
 
     # ── Assemble PowerPoint ───────────────────────────────────────────────────
     print("\n🔧 Assembling PowerPoint …")
-    build_powerpoint(content, output_path)
-
-
-if __name__ == "__main__":
-    main()
-create(
-        model=CLAUDE_MODEL,
-        max_tokens=16384,
-        system=CONTENT_SYSTEM,
-        messages=[{"role": "user", "content": CONTENT_PROMPT.format(
-            research_text=research_text,
-            outline_json=json.dumps(outline, indent=2),
-        )}],
-    )
-    if msg.stop_reason == "max_tokens":
-        raise RuntimeError(
-            "Content response was cut off (hit max_tokens limit). "
-            "The outline may have too many slides — try approving a shorter outline, "
-            "or reduce MAX_RESEARCH_CHARS.")
-    text_blocks = [b for b in msg.content if getattr(b, "type", None) == "text"]
-    if not text_blocks:
-        raise RuntimeError(
-            "Claude returned no text content in the content response. "
-            f"Stop reason: {msg.stop_reason}. Content blocks: {msg.content\!r}"
-        )
-    raw_text = strip_json_fences(text_blocks[0].text)
-    try:
-        return json.loads(raw_text)
-    except json.JSONDecodeError as e:
-        print("Failed to parse content JSON. The response may have been cut off.")
-        print(f"   Raw extracted text (first 500 chars):\n{raw_text[:500]}...\n")
-        raise RuntimeError(f"Content JSON parse failed: {e}") from e
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# MAIN
-# ──────────────────────────────────────────────────────────────────────────────
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Generate GCSE Chemistry PowerPoints from AQA research material."
-    )
-    parser.add_argument("--topic",   required=True,
-                        help="Topic code, e.g. 4.1.1")
-    parser.add_argument("--title",   default="",
-                        help="Topic title (optional)")
-    parser.add_argument("--research",
-                        help="Path to research document (.docx or .txt)")
-    parser.add_argument("--content",
-                        help="Pre-generated content JSON (skips Claude API calls)")
-    parser.add_argument("--output",
-                        help="Output .pptx path (default: Generated Presentations/TOPIC.pptx)")
-    parser.add_argument("--save-content", action="store_true",
-                        help="Save generated content JSON alongside the .pptx")
-    def positive_int(value):
-        ivalue = int(value)
-        if ivalue < 1:
-            raise argparse.ArgumentTypeError(f"--max-slides must be at least 1 (got {ivalue})")
-        return ivalue
-    parser.add_argument("--max-slides", type=positive_int, default=25,
-                        help="Maximum number of slides in the outline (default: 25)")
-    args = parser.parse_args()
-
-    # Determine output path
-    topic_safe   = args.topic.replace(".", "_")
-    output_path  = Path(args.output) if args.output \
-        else OUTPUT_DIR / f"{topic_safe}.pptx"
-
-    # ── Preflight checks ─────────────────────────────────────────────────────
-    if not PALETTE_PATH.exists():
-        sys.exit(
-            f"Template file not found: {PALETTE_PATH}\n"
-            f"   Place 'Palette v2.pptx' in the same folder as this script."
-        )
-
-    print(f"\nGCSE Chemistry PowerPoint Generator")
-    print(f"    Topic  : {args.topic}{(' - ' + args.title) if args.title else ''}")
-    print(f"    Output : {output_path}\n")
-
-    # ── Load or generate content ──────────────────────────────────────────────
-    if args.content:
-        print(f"Loading content from {args.content} ...")
-        content = json.loads(Path(args.content).read_text(encoding="utf-8"))
-        if "slides" not in content or not isinstance(content["slides"], list):
-            sys.exit("Content JSON is missing a 'slides' array. Check the file format.")
-
-    else:
-        if not args.research:
-            parser.error("--research is required when --content is not provided.")
-
-        research_path = Path(args.research)
-        if not research_path.is_absolute():
-            research_path = SCRIPT_DIR / research_path
-
-        try:
-            import anthropic
-            client = anthropic.Anthropic()
-        except ImportError:
-            sys.exit("anthropic package not installed. Run: pip install anthropic")
-
-        # Call 1: Generate outline
-        outline = generate_outline(client, args.topic, args.title,
-                                   research_path, args.max_slides)
-
-        # User review
-        approved = review_outline_interactive(outline)
-        if not approved:
-            print("Outline not approved. Exiting.")
-            sys.exit(0)
-
-        # Call 2: Generate full content
-        content = generate_content(client, outline, research_path)
-
-    if args.save_content:
-        content_path = output_path.with_suffix(".json")
-        content_path.write_text(json.dumps(content, indent=2, ensure_ascii=False),
-                                encoding="utf-8")
-        print(f"  Content saved: {content_path}")
-
-    # ── Build PowerPoint ──────────────────────────────────────────────────────
-    print(f"\nBuilding PowerPoint ...")
     build_powerpoint(content, output_path)
 
 
