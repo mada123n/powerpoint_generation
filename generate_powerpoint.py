@@ -1235,7 +1235,7 @@ def validate_content_schema(content: dict, source_name: str) -> None:
             questions = slide["questions"]
             if not isinstance(questions, list):
                 raise ValueError(f"{where} field 'questions' must be an array.")
-            min_q = question_min.get(slide_type, 1)
+            min_q = question_min[slide_type]
             if len(questions) < min_q:
                 raise ValueError(f"{where} requires at least {min_q} question(s).")
             for q_i, q in enumerate(questions, start=1):
