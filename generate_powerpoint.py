@@ -301,10 +301,12 @@ def para_bullet(text: str) -> str:
 
 
 def para_text(text: str, bold: bool = False, italic: bool = False,
-              color_hex: str = "1A1A2E", scheme_color: str = None) -> str:
+              color_hex: str = "1A1A2E", scheme_color: str = None,
+              center: bool = False) -> str:
     """Plain paragraph for text boxes (definition box, example cards, etc.)."""
     b_attr = ' b="1"' if bold else ''
     i_attr = ' i="1"' if italic else ''
+    ppr_xml = '            <a:pPr algn="ctr"/>\n' if center else ''
 
     if scheme_color:
         fill_xml = f'<a:solidFill><a:schemeClr val="{scheme_color}"/></a:solidFill>'
@@ -313,6 +315,7 @@ def para_text(text: str, bold: bool = False, italic: bool = False,
 
     return (
         f'          <a:p>\n'
+        f'{ppr_xml}'
         f'            <a:r>\n'
         f'              <a:rPr lang="en-GB"{b_attr}{i_attr} dirty="0">\n'
         f'                {fill_xml}\n'
@@ -484,7 +487,7 @@ def edit_title_slide(xml: str, slide: dict) -> str:
 def edit_concept_definition(xml: str, slide: dict) -> str:
     xml = set_shape_text(xml, "Title 1", para_title(slide.get("title", "")))
     xml = set_shape_text(xml, "Rectangle 3",
-                         para_text(slide.get("definition", ""), italic=True, color_hex="FFFFFF"))
+                         para_text(slide.get("definition", ""), italic=True, color_hex="FFFFFF", center=True))
     xml = set_shape_text(xml, "Content Placeholder 2",
                          bullets_xml(slide.get("bullets", [])))
     xml = remove_shape(xml, "Rectangle 4")
@@ -504,7 +507,7 @@ def edit_concept_explanation_with_example(xml: str, slide: dict) -> str:
     xml = set_shape_text(xml, "Content Placeholder 2",
                          bullets_xml(slide.get("bullets", [])))
     xml = set_shape_text(xml, "Rectangle 3",
-                         para_text(slide.get("example", "")))
+                         para_text(slide.get("example", ""), italic=True, color_hex="FFFFFF", center=True))
     xml = remove_shape(xml, "Rectangle 4")
     return xml
 
@@ -1040,9 +1043,11 @@ Output JSON:
 }}"""
 
 CONTENT_SYSTEM = (
-    "You are a GCSE Chemistry teacher writing slide content for 14–16 year olds. "
-    "Content must be accurate, specification-aligned, and age-appropriate. "
-    "Output valid JSON only—no markdown, no explanation."
+    "You are an expert AQA GCSE Chemistry teacher writing slide content for 14–16 year olds "
+    "preparing for their exams. Every bullet point, definition, and explanation must be as "
+    "informative and precise as possible — include key scientific terms, units, and the level "
+    "of detail a student needs to answer exam questions confidently. Accuracy and depth are the "
+    "top priority. Output valid JSON only — no markdown, no explanation."
 )
 
 CONTENT_PROMPT = """\
@@ -1061,14 +1066,15 @@ MANDATORY FORMATTING RULES — apply to ALL text in every field without exceptio
 3. NO BLOCK CAPITALS for emphasis: Only use capitals where scientifically required, e.g. chemical formulas (NaOH, H2SO4, CO2). Never capitalise a whole word for emphasis.
 4. TONE: Friendly, formal, and accessible to a 15-year-old student. Avoid jargon unless required by the specification; always define new terms when they are first introduced.
 5. CALCULATIONS: Always include units at every step of a worked example, not just the final answer. Write units in full where possible (e.g. g/mol, not just mol) so the student can see how units cancel. For example: Moles of NaOH = 100 g divided by 40 g/mol = 2.5 mol.
-6. DEPTH: The most important criterion is comprehensive coverage of the specification learning objectives. Do not compress content — if a concept requires more detail, provide it.
-7. LENGTH LIMITS (CRITICAL — text will overflow the slide if exceeded):
-   - definition: max 100 characters (1 short sentence)
-   - bullets (all types): max 130 characters per bullet for Short/Definition; max 110 chars for Long
-   - Concept Explanation With Example: max 3 bullets; example max 120 characters
-   - Real-World Application Short description: max 200 characters per example
-   - Real-World Application Long description: max 90 characters per example (cards are very small)
-   - Assessment reveal answers: max 180 characters; Assessment 3Q answers max 90 characters
+6. DEPTH: The most important criterion is comprehensive coverage of the specification learning objectives. Do not compress content — if a concept requires more detail, provide it. Include precise values, units, and key terms wherever they help a student answer an exam question.
+7. LENGTH TARGETS (use the full allowance — thin content leaves students underprepared; text will overflow only if you exceed the maximum):
+   - definition: 80–100 characters — write a full, precise sentence
+   - bullets (Short/Definition types): 100–130 characters each — aim for the upper end
+   - bullets (Long type): 80–110 characters each
+   - Concept Explanation With Example: max 3 bullets; example 90–120 characters
+   - Real-World Application Short description: 150–200 characters per example
+   - Real-World Application Long description: max 90 characters per example (cards are very small — be concise)
+   - Assessment reveal answers: 120–180 characters; Assessment 3Q answers max 90 characters
    - Visual Explanation observations: max 80 characters each
 
 Output a JSON object with a "slides" array. Use this EXACT schema per slide type:
