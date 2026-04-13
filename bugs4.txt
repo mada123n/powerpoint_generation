@@ -1,0 +1,19 @@
+1) Unhandled file/JSON errors for `--content` input
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1409
+   - Problem: `json.loads(Path(args.content).read_text(...))` is unguarded. Missing files, unreadable paths, or malformed JSON produce a raw traceback instead of a clear CLI error.
+   - Suggested fix: Wrap file read + `json.loads` in `try/except` (`FileNotFoundError`, `OSError`, `json.JSONDecodeError`) and exit with a user-friendly message.
+
+2) Inconsistent relative-path handling for `--content`
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1409 and 1419-1422
+   - Problem: `--research` relative paths are resolved against `SCRIPT_DIR`, but `--content` is read directly from the current working directory. Running the script from another directory can make `--content` fail unexpectedly.
+   - Suggested fix: Normalize `args.content` the same way as `args.research` (resolve relative paths against `SCRIPT_DIR`).
+
+3) Spec-section boundary detection is incorrect for deeper topic codes
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:973-977
+   - Problem: `next_section_re` is built as `{parts[0]}.{parts[1]}.\d+` for all topics. For 4-part topics like `4.1.1.1`, this pattern is too broad and can match unrelated/parent numbering, causing premature truncation of extracted spec text.
+   - Suggested fix: Build the boundary regex from the full topic depth (same-level sibling only), e.g. derive parent prefix from all-but-last parts and match the next sibling at that exact depth.
+
+4) Outline schema is not validated before interactive review
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1298-1306
+   - Problem: `review_outline_interactive` assumes keys like `topic_code`, `topic_title`, `slides`, `slide_number`, `type`, and `title` exist. If Claude returns malformed outline JSON, this crashes with `KeyError` before any helpful error handling.
+   - Suggested fix: Add outline-schema validation immediately after `generate_outline` (or defensively in `review_outline_interactive`) and fail with a clear validation message.
