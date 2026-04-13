@@ -37,14 +37,16 @@ from pathlib import Path
 # ──────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR    = Path(__file__).parent
-PALETTE_PATH  = SCRIPT_DIR / "Palette.pptx"
+PALETTE_PATH  = SCRIPT_DIR / "Palette v2.pptx"
 SPEC_PDF_PATH = SCRIPT_DIR / "AQA GCSE Chemistry Spec.PDF"
 OUTPUT_DIR    = SCRIPT_DIR / "Generated Presentations"
 
 CLAUDE_MODEL     = "claude-sonnet-4-6"
 MAX_RESEARCH_CHARS = 40_000   # Truncate research doc to stay within context limits
 
-# Maps content type names (as Claude tags slides) → Palette.pptx template slide file
+# Maps content type names (as Claude tags slides) → Palette v2.pptx template slide file
+# Palette v2 has 12 slides (Visual Explanation variants consolidated;
+# Assessment – Concepts (1 question) added).
 SLIDE_VARIANTS = {
     "Title Slide":                          "slide1.xml",
     "Concept Definition":                   "slide2.xml",
@@ -53,18 +55,19 @@ SLIDE_VARIANTS = {
     "Concept Explanation – Long":           "slide5.xml",
     "Real-World Application – Short":       "slide6.xml",
     "Real-World Application – Long":        "slide7.xml",
-    "Visual Explanation – Small":           "slide8.xml",
-    "Visual Explanation – Medium":          "slide9.xml",
-    "Visual Explanation – Large":           "slide10.xml",
-    "Assessment – Calculations":            "slide11.xml",
-    "Assessment – Concepts (2 questions)":  "slide12.xml",
-    "Assessment – Concepts (3 questions)":  "slide13.xml",
+    "Visual Explanation":                   "slide8.xml",
+    "Assessment – Calculations":            "slide9.xml",
+    "Assessment – Concepts (1 question)":   "slide10.xml",
+    "Assessment – Concepts (2 questions)":  "slide11.xml",
+    "Assessment – Concepts (3 questions)":  "slide12.xml",
 }
 
-# Shape IDs of the "Click to reveal" answer boxes (from Palette.pptx analysis)
+# Numeric shape IDs (spid) of the click-to-reveal answer boxes in Palette v2.
+# Used by build_animation_xml() to hide boxes at slide start and reveal on click.
 REVEAL_BOX_SHAPE_IDS = {
-    "Assessment – Concepts (2 questions)": [3, 19],
-    "Assessment – Concepts (3 questions)": [3, 19, 35],
+    "Assessment – Concepts (1 question)":  [19],        # Rectangle 18
+    "Assessment – Concepts (2 questions)": [3, 19],     # Rectangle 2, Rectangle 18
+    "Assessment – Concepts (3 questions)": [3, 35, 19], # Rectangle 2, Rectangle 34, Rectangle 18
 }
 
 
@@ -333,6 +336,34 @@ def para_reveal(text: str) -> str:
     )
 
 
+def para_example_card(name: str, description: str) -> str:
+    """Two-paragraph text for Real-World Application cards in Palette v2.
+    Paragraph 1 = example name (bold).
+    Paragraph 2 = description (normal weight).
+    Both at 16pt to match the template's explicit font size."""
+    name_para = (
+        f'          <a:p>\n'
+        f'            <a:r>\n'
+        f'              <a:rPr lang="en-GB" sz="1600" b="1" dirty="0">\n'
+        f'                <a:solidFill><a:srgbClr val="1A1A2E"/></a:solidFill>\n'
+        f'              </a:rPr>\n'
+        f'              <a:t>{xml_escape(name)}</a:t>\n'
+        f'            </a:r>\n'
+        f'          </a:p>'
+    )
+    desc_para = (
+        f'          <a:p>\n'
+        f'            <a:r>\n'
+        f'              <a:rPr lang="en-GB" sz="1600" dirty="0">\n'
+        f'                <a:solidFill><a:srgbClr val="1A1A2E"/></a:solidFill>\n'
+        f'              </a:rPr>\n'
+        f'              <a:t>{xml_escape(description)}</a:t>\n'
+        f'            </a:r>\n'
+        f'          </a:p>'
+    )
+    return name_para + "\n" + desc_para
+
+
 def bullets_xml(items: list) -> str:
     """Build multiple bullet paragraphs followed by an empty end paragraph."""
     paras = [para_bullet(item) for item in items]
@@ -486,40 +517,38 @@ def edit_concept_explanation_long(xml: str, slide: dict) -> str:
 
 
 def edit_real_world_short(xml: str, slide: dict) -> str:
-    """Real-World Application – Short: title + 2 example cards."""
+    """Real-World Application – Short: title + 2 example cards.
+    Palette v2: each card is a single Rectangle (name bold + description normal,
+    two paragraphs in one text box). Shape names: Rectangle 3, Rectangle 20."""
     xml = set_shape_text(xml, "Title 1", para_title(slide.get("title", "")))
     xml = remove_shape(xml, "Rectangle 4")
     examples = slide.get("examples", [])
-    # Slide 6 shape names (from Palette.pptx analysis)
-    slots = [("TextBox 14", "TextBox 15"), ("TextBox 22", "TextBox 23")]
-    for i, (name_shape, desc_shape) in enumerate(slots):
+    slots = ["Rectangle 3", "Rectangle 20"]
+    for i, text_shape in enumerate(slots):
         if i < len(examples):
             ex = examples[i]
-            xml = set_shape_text(xml, name_shape,
-                                 para_text(ex.get("name", ""), bold=True))
-            xml = set_shape_text(xml, desc_shape,
-                                 para_text(ex.get("description", "")))
+            xml = set_shape_text(xml, text_shape,
+                                 para_example_card(ex.get("name", ""),
+                                                   ex.get("description", "")))
     return xml
 
 
 def edit_real_world_long(xml: str, slide: dict) -> str:
-    """Real-World Application – Long: title + 3 example cards."""
+    """Real-World Application – Long: title + 3 example cards.
+    Palette v2: each card is a single Rectangle. Shape names: Rectangle 3,
+    Rectangle 13, Rectangle 24.
+    NOTE: Each card group is only 1.476 inches visible — descriptions must be
+    very concise (max ~90 chars) or text will be clipped."""
     xml = set_shape_text(xml, "Title 1", para_title(slide.get("title", "")))
     xml = remove_shape(xml, "Rectangle 4")
     examples = slide.get("examples", [])
-    # Slide 7 shape names (from Palette.pptx analysis)
-    slots = [
-        ("TextBox 14", "TextBox 15"),
-        ("TextBox 17", "TextBox 18"),
-        ("TextBox 26", "TextBox 27"),
-    ]
-    for i, (name_shape, desc_shape) in enumerate(slots):
+    slots = ["Rectangle 3", "Rectangle 13", "Rectangle 24"]
+    for i, text_shape in enumerate(slots):
         if i < len(examples):
             ex = examples[i]
-            xml = set_shape_text(xml, name_shape,
-                                 para_text(ex.get("name", ""), bold=True))
-            xml = set_shape_text(xml, desc_shape,
-                                 para_text(ex.get("description", "")))
+            xml = set_shape_text(xml, text_shape,
+                                 para_example_card(ex.get("name", ""),
+                                                   ex.get("description", "")))
     return xml
 
 
@@ -543,61 +572,106 @@ def edit_assessment_calculations(xml: str, slide: dict) -> str:
     return xml
 
 
-def edit_assessment_concepts(xml: str, slide: dict,
-                             reveal_shape_ids: list) -> str:
-    """Assessment – Concepts: title + 2 or 3 click-to-reveal question blocks."""
+def _reveal_text(q_type: str, answer: str) -> str:
+    """Format the click-to-reveal answer text based on question type."""
+    if q_type == "Fill in the blank":
+        return f"\U0001f5b1  Click to reveal  \u2192  Answer: {answer}"
+    return f"\U0001f5b1  Click to reveal  \u2192  Model answer: {answer}"
+
+
+def edit_assessment_concepts_1q(xml: str, slide: dict) -> str:
+    """Assessment – Concepts (1 question): title + single click-to-reveal block.
+    Palette v2 slide10 shape names:
+      Rectangle 12 = question text (inside Group 5)
+      Rectangle 18 = answer reveal box (inside Group 5)"""
     xml = set_shape_text(xml, "Title 1", para_title(slide.get("title", "")))
     xml = remove_shape(xml, "Rectangle 4")
 
     questions = slide.get("questions", [])
+    if questions:
+        q = questions[0]
+        xml = set_shape_text(xml, "Rectangle 12", para_text(q.get("question", "")))
+        xml = set_shape_text(xml, "Rectangle 18",
+                             para_reveal(_reveal_text(q.get("type", "Explain"),
+                                                      q.get("answer", ""))))
 
-    # (type_label_shape, question_text_shape, reveal_box_shape)
-    q_slots = [
-        ("TextBox 14", "TextBox 15", "Rectangle 2"),    # Q1
-        ("TextBox 16", "TextBox 17", "Rectangle 18"),   # Q2
-        ("TextBox 32", "TextBox 33", "Rectangle 34"),   # Q3 (slide13 only)
-    ]
-
-    for i, (type_sh, q_sh, ans_sh) in enumerate(q_slots):
-        if i >= len(questions):
-            break
-        q = questions[i]
-        q_type  = q.get("type", "Explain")
-        q_text  = q.get("question", "")
-        q_ans   = q.get("answer", "")
-
-        xml = set_shape_text(xml, type_sh, para_text(q_type, bold=True))
-        xml = set_shape_text(xml, q_sh, para_text(q_text))
-
-        if q_type == "Fill in the blank":
-            reveal_text = f"\U0001f5b1  Click to reveal  \u2192  Answer: {q_ans}"
-        else:
-            reveal_text = f"\U0001f5b1  Click to reveal  \u2192  Model answer: {q_ans}"
-        xml = set_shape_text(xml, ans_sh, para_reveal(reveal_text))
-
-    # Inject animation timing XML (before </p:sld>)
-    anim = build_animation_xml(reveal_shape_ids)
+    anim = build_animation_xml(REVEAL_BOX_SHAPE_IDS["Assessment – Concepts (1 question)"])
     xml = xml.replace("</p:sld>", f"{anim}\n</p:sld>")
     return xml
 
 
-# Dispatcher table
+def edit_assessment_concepts_2q(xml: str, slide: dict) -> str:
+    """Assessment – Concepts (2 questions): title + 2 click-to-reveal blocks.
+    Palette v2 slide11 shape names (all direct children of slide, no groups):
+      Q1: Rectangle 3 (question), Rectangle 2 (answer)
+      Q2: Rectangle 12 (question), Rectangle 18 (answer)"""
+    xml = set_shape_text(xml, "Title 1", para_title(slide.get("title", "")))
+    xml = remove_shape(xml, "Rectangle 4")
+
+    questions = slide.get("questions", [])
+    q_slots = [
+        ("Rectangle 3",  "Rectangle 2"),   # Q1
+        ("Rectangle 12", "Rectangle 18"),  # Q2
+    ]
+    for i, (q_sh, ans_sh) in enumerate(q_slots):
+        if i >= len(questions):
+            break
+        q = questions[i]
+        xml = set_shape_text(xml, q_sh, para_text(q.get("question", "")))
+        xml = set_shape_text(xml, ans_sh,
+                             para_reveal(_reveal_text(q.get("type", "Explain"),
+                                                      q.get("answer", ""))))
+
+    anim = build_animation_xml(REVEAL_BOX_SHAPE_IDS["Assessment – Concepts (2 questions)"])
+    xml = xml.replace("</p:sld>", f"{anim}\n</p:sld>")
+    return xml
+
+
+def edit_assessment_concepts_3q(xml: str, slide: dict) -> str:
+    """Assessment – Concepts (3 questions): title + 3 click-to-reveal blocks.
+    Palette v2 slide12 shape names (each question in its own group):
+      Q1 (Group 5):  Rectangle 3  (question), Rectangle 2  (answer)
+      Q2 (Group 29): Rectangle 30 (question), Rectangle 34 (answer)
+      Q3 (Group 28): Rectangle 12 (question), Rectangle 18 (answer)
+    NOTE: Each card is only 1.378 inches tall — questions and answers must be
+    very short (max ~90 chars each). Prefer Fill-in-the-blank type questions."""
+    xml = set_shape_text(xml, "Title 1", para_title(slide.get("title", "")))
+    xml = remove_shape(xml, "Rectangle 4")
+
+    questions = slide.get("questions", [])
+    q_slots = [
+        ("Rectangle 3",  "Rectangle 2"),   # Q1
+        ("Rectangle 30", "Rectangle 34"),  # Q2
+        ("Rectangle 12", "Rectangle 18"),  # Q3
+    ]
+    for i, (q_sh, ans_sh) in enumerate(q_slots):
+        if i >= len(questions):
+            break
+        q = questions[i]
+        xml = set_shape_text(xml, q_sh, para_text(q.get("question", "")))
+        xml = set_shape_text(xml, ans_sh,
+                             para_reveal(_reveal_text(q.get("type", "Explain"),
+                                                      q.get("answer", ""))))
+
+    anim = build_animation_xml(REVEAL_BOX_SHAPE_IDS["Assessment – Concepts (3 questions)"])
+    xml = xml.replace("</p:sld>", f"{anim}\n</p:sld>")
+    return xml
+
+
+# Dispatcher table — maps slide type name → editor function
 SLIDE_EDITORS = {
-    "Title Slide":                         edit_title_slide,
-    "Concept Definition":                  edit_concept_definition,
-    "Concept Explanation – Short":         edit_concept_explanation_short,
-    "Concept Explanation With Example":    edit_concept_explanation_with_example,
-    "Concept Explanation – Long":          edit_concept_explanation_long,
-    "Real-World Application – Short":      edit_real_world_short,
-    "Real-World Application – Long":       edit_real_world_long,
-    "Visual Explanation – Small":          edit_visual_explanation,
-    "Visual Explanation – Medium":         edit_visual_explanation,
-    "Visual Explanation – Large":          edit_visual_explanation,
-    "Assessment – Calculations":           edit_assessment_calculations,
-    "Assessment – Concepts (2 questions)": lambda x, s: edit_assessment_concepts(
-        x, s, REVEAL_BOX_SHAPE_IDS["Assessment – Concepts (2 questions)"]),
-    "Assessment – Concepts (3 questions)": lambda x, s: edit_assessment_concepts(
-        x, s, REVEAL_BOX_SHAPE_IDS["Assessment – Concepts (3 questions)"]),
+    "Title Slide":                          edit_title_slide,
+    "Concept Definition":                   edit_concept_definition,
+    "Concept Explanation – Short":          edit_concept_explanation_short,
+    "Concept Explanation With Example":     edit_concept_explanation_with_example,
+    "Concept Explanation – Long":           edit_concept_explanation_long,
+    "Real-World Application – Short":       edit_real_world_short,
+    "Real-World Application – Long":        edit_real_world_long,
+    "Visual Explanation":                   edit_visual_explanation,
+    "Assessment – Calculations":            edit_assessment_calculations,
+    "Assessment – Concepts (1 question)":   edit_assessment_concepts_1q,
+    "Assessment – Concepts (2 questions)":  edit_assessment_concepts_2q,
+    "Assessment – Concepts (3 questions)":  edit_assessment_concepts_3q,
 }
 
 
@@ -862,10 +936,16 @@ def load_research_text(research_path: Path, topic_code: str = None) -> str:
                       f"— using full document")
 
         # Fall back to full pandoc conversion
-        result = subprocess.run(
-            ["pandoc", str(research_path), "-t", "plain", "--wrap=none"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace"
-        )
+        try:
+            result = subprocess.run(
+                ["pandoc", str(research_path), "-t", "plain", "--wrap=none"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace"
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "pandoc is not installed or not on PATH. "
+                "Install it from https://pandoc.org/installing.html and try again."
+            )
         if result.returncode != 0:
             raise RuntimeError(f"pandoc failed: {result.stderr}")
         return result.stdout
@@ -880,9 +960,13 @@ def extract_spec_section(topic_code: str) -> str:
         text_pages = []
         in_section = False
         parts = topic_code.split(".")
-        # Pattern for next section at same level, e.g. 4.1.2 when we want 4.1.1
-        next_section_re = re.compile(
-            rf'{re.escape(parts[0])}\.{re.escape(parts[1])}\.\d+')
+        if len(parts) < 2:
+            print(f"  ⚠  Topic code '{topic_code}' has no sub-section — cannot build next-section pattern; extracting by keyword only.")
+            next_section_re = re.compile(r'(?!x)x')  # never matches
+        else:
+            # Pattern for next section at same level, e.g. 4.1.2 when we want 4.1.1
+            next_section_re = re.compile(
+                rf'{re.escape(parts[0])}\.{re.escape(parts[1])}\.\d+')
 
         with pdfplumber.open(SPEC_PDF_PATH) as pdf:
             for page in pdf.pages:
@@ -920,18 +1004,17 @@ Research document (excerpt):
 
 AVAILABLE SLIDE TYPES (pick the best fit for each concept):
 - Title Slide
-- Concept Definition         (image placeholder + 1-sentence definition box + 3–4 bullets)
-- Concept Explanation – Short        (3–4 bullets, no image)
-- Concept Explanation With Example   (3–4 bullets + 1 example box)
-- Concept Explanation – Long         (5–7 bullets for dense topics)
-- Real-World Application – Short     (2 real-world example cards with brown border)
-- Real-World Application – Long      (3 real-world example cards with brown border)
-- Visual Explanation – Small         (large image + 3 interpretation bullets)
-- Visual Explanation – Medium        (large image + 2 interpretation bullets)
-- Visual Explanation – Large         (full-width image + 1 key takeaway)
-- Assessment – Calculations          (2 worked examples + reference data table)
-- Assessment – Concepts (2 questions)  (2 click-to-reveal questions)
-- Assessment – Concepts (3 questions)  (3 click-to-reveal questions)
+- Concept Definition                   (1-sentence definition box + 4 supporting bullets — always first for a new concept)
+- Concept Explanation – Short          (3–4 bullets, full-width — most common explanation type, prefer this)
+- Concept Explanation With Example     (max 3 bullets + 1 example callout box at bottom)
+- Concept Explanation – Long           (5–7 short bullets for dense multi-part topics)
+- Real-World Application – Short       (2 real-world example cards — name + 2–3 sentence description each)
+- Real-World Application – Long        (3 real-world example cards — name + 1 SHORT sentence each, very brief)
+- Visual Explanation                   (central image placeholder + 2–3 observation bullets — image added manually)
+- Assessment – Calculations            (2 worked calculation examples with numbered steps)
+- Assessment – Concepts (1 question)   (1 open-ended explain question with click-to-reveal model answer)
+- Assessment – Concepts (2 questions)  (2 click-to-reveal questions: Q1 fill-in-blank, Q2 explain — standard assessment)
+- Assessment – Concepts (3 questions)  (3 short click-to-reveal questions — all must be very brief)
 
 RULES:
 1. Slide 1 MUST be "Title Slide"
@@ -975,6 +1058,14 @@ MANDATORY FORMATTING RULES — apply to ALL text in every field without exceptio
 4. TONE: Friendly, formal, and accessible to a 15-year-old student. Avoid jargon unless required by the specification; always define new terms when they are first introduced.
 5. CALCULATIONS: Always include units at every step of a worked example, not just the final answer. Write units in full where possible (e.g. g/mol, not just mol) so the student can see how units cancel. For example: Moles of NaOH = 100 g divided by 40 g/mol = 2.5 mol.
 6. DEPTH: The most important criterion is comprehensive coverage of the specification learning objectives. Do not compress content — if a concept requires more detail, provide it.
+7. LENGTH LIMITS (CRITICAL — text will overflow the slide if exceeded):
+   - definition: max 100 characters (1 short sentence)
+   - bullets (all types): max 130 characters per bullet for Short/Definition; max 110 chars for Long
+   - Concept Explanation With Example: max 3 bullets; example max 120 characters
+   - Real-World Application Short description: max 200 characters per example
+   - Real-World Application Long description: max 90 characters per example (cards are very small)
+   - Assessment reveal answers: max 180 characters; Assessment 3Q answers max 90 characters
+   - Visual Explanation observations: max 80 characters each
 
 Output a JSON object with a "slides" array. Use this EXACT schema per slide type:
 
@@ -983,8 +1074,8 @@ Title Slide:
 
 Concept Definition:
   {{"slide_number": N, "type": "Concept Definition", "title": "...",
-    "definition": "One complete sentence definition.",
-    "bullets": ["fact 1", "fact 2", "fact 3"]}}
+    "definition": "One complete sentence definition (max 100 chars).",
+    "bullets": ["fact 1", "fact 2", "fact 3", "fact 4"]}}
 
 Concept Explanation – Short:
   {{"slide_number": N, "type": "Concept Explanation – Short", "title": "...",
@@ -993,7 +1084,7 @@ Concept Explanation – Short:
 Concept Explanation With Example:
   {{"slide_number": N, "type": "Concept Explanation With Example", "title": "...",
     "bullets": ["point 1", "point 2", "point 3"],
-    "example": "Example name: 2–3 sentence description."}}
+    "example": "One or two sentences illustrating the concept (max 120 chars)."}}
 
 Concept Explanation – Long:
   {{"slide_number": N, "type": "Concept Explanation – Long", "title": "...",
@@ -1002,44 +1093,58 @@ Concept Explanation – Long:
 Real-World Application – Short:
   {{"slide_number": N, "type": "Real-World Application – Short", "title": "...",
     "examples": [
-      {{"name": "Example Name", "description": "2 to 3 sentences."}},
-      {{"name": "Example Name", "description": "2 to 3 sentences."}}
+      {{"name": "Example Name (max 50 chars)", "description": "2 sentences, max 200 chars."}},
+      {{"name": "Example Name (max 50 chars)", "description": "2 sentences, max 200 chars."}}
     ]}}
 
 Real-World Application – Long:
   {{"slide_number": N, "type": "Real-World Application – Long", "title": "...",
     "examples": [
-      {{"name": "...", "description": "..."}},
-      {{"name": "...", "description": "..."}},
-      {{"name": "...", "description": "..."}}
+      {{"name": "Short name (max 40 chars)", "description": "One short sentence, max 90 chars."}},
+      {{"name": "Short name (max 40 chars)", "description": "One short sentence, max 90 chars."}},
+      {{"name": "Short name (max 40 chars)", "description": "One short sentence, max 90 chars."}}
     ]}}
 
-Visual Explanation – Small / Medium / Large:
-  {{"slide_number": N, "type": "Visual Explanation – Small", "title": "...",
-    "image_description": "Describe the diagram for image search.",
-    "bullets": ["observation 1", "observation 2", "observation 3"]}}
-  (3 bullets for Small, 2 for Medium, 1 for Large)
+Visual Explanation:
+  {{"slide_number": N, "type": "Visual Explanation", "title": "...",
+    "image_description": "Describe the diagram or graph for manual image sourcing.",
+    "bullets": ["observation 1 (max 80 chars)", "observation 2 (max 80 chars)", "observation 3 (max 80 chars)"]}}
 
 Assessment – Calculations:
   {{"slide_number": N, "type": "Assessment – Calculations", "title": "...",
-    "example1": "Worked example 1 with numbered steps.",
-    "example2": "Worked example 2 with numbered steps.",
+    "example1": "Worked example 1 with numbered steps (max 400 chars).",
+    "example2": "Worked example 2 with numbered steps (max 400 chars).",
     "reference_data": [["Symbol", "Name", "Value"], ["e", "Electron charge", "1.6×10⁻¹⁹ C"]]}}
+
+Assessment – Concepts (1 question):
+  {{"slide_number": N, "type": "Assessment – Concepts (1 question)",
+    "title": "Understanding Check: TOPIC",
+    "questions": [
+      {{"type": "Explain",
+        "question": "Open-ended why or how question (max 180 chars).",
+        "answer": "Model answer: 2 to 3 concise sentences (max 220 chars total including prefix)."}}
+    ]}}
 
 Assessment – Concepts (2 questions):
   {{"slide_number": N, "type": "Assessment – Concepts (2 questions)",
     "title": "Understanding Check: TOPIC",
     "questions": [
       {{"type": "Fill in the blank",
-        "question": "Sentence with a ________ to complete.",
-        "answer": "correct word or phrase"}},
+        "question": "Sentence with a ________ to complete (max 100 chars).",
+        "answer": "correct word or phrase (max 30 chars)"}},
       {{"type": "Explain",
-        "question": "Why / How question.",
-        "answer": "2 to 3 sentence model answer."}}
+        "question": "Why or how question (max 140 chars).",
+        "answer": "Model answer in 1 to 2 sentences (max 180 chars total including prefix)."}}
     ]}}
 
 Assessment – Concepts (3 questions):
-  (same as above but with 3 question objects)
+  {{"slide_number": N, "type": "Assessment – Concepts (3 questions)",
+    "title": "Quick Check: TOPIC",
+    "questions": [
+      {{"type": "Fill in the blank", "question": "Short sentence with ________ (max 90 chars).", "answer": "word (max 30 chars)"}},
+      {{"type": "Fill in the blank", "question": "Short sentence with ________ (max 90 chars).", "answer": "word (max 30 chars)"}},
+      {{"type": "Fill in the blank", "question": "Short sentence with ________ (max 90 chars).", "answer": "word (max 30 chars)"}}
+    ]}}
 
 Full JSON:"""
 
@@ -1081,7 +1186,13 @@ def generate_outline(client, topic_code: str, topic_title: str,
         raise RuntimeError(
             "Outline response was cut off (hit max_tokens limit). "
             "The topic may be unusually large — try splitting it or reducing MAX_RESEARCH_CHARS.")
-    raw_text = strip_json_fences(msg.content[0].text)
+    text_blocks = [b for b in msg.content if getattr(b, "type", None) == "text"]
+    if not text_blocks:
+        raise RuntimeError(
+            "Claude returned no text content in the outline response. "
+            f"Stop reason: {msg.stop_reason}. Content blocks: {msg.content!r}"
+        )
+    raw_text = strip_json_fences(text_blocks[0].text)
     try:
         outline = json.loads(raw_text)
     except json.JSONDecodeError as e:
@@ -1136,7 +1247,13 @@ def generate_content(client, outline: dict, research_path: Path) -> dict:
             "Content response was cut off (hit max_tokens limit). "
             "The outline may have too many slides — try approving a shorter outline, "
             "or reduce MAX_RESEARCH_CHARS.")
-    raw_text = strip_json_fences(msg.content[0].text)
+    text_blocks = [b for b in msg.content if getattr(b, "type", None) == "text"]
+    if not text_blocks:
+        raise RuntimeError(
+            "Claude returned no text content in the content response. "
+            f"Stop reason: {msg.stop_reason}. Content blocks: {msg.content!r}"
+        )
+    raw_text = strip_json_fences(text_blocks[0].text)
     try:
         return json.loads(raw_text)
     except json.JSONDecodeError as e:
@@ -1165,7 +1282,12 @@ def main():
                         help="Output .pptx path (default: Generated Presentations/TOPIC.pptx)")
     parser.add_argument("--save-content", action="store_true",
                         help="Save generated content JSON alongside the .pptx")
-    parser.add_argument("--max-slides", type=int, default=25,
+    def positive_int(value):
+        ivalue = int(value)
+        if ivalue < 1:
+            raise argparse.ArgumentTypeError(f"--max-slides must be at least 1 (got {ivalue})")
+        return ivalue
+    parser.add_argument("--max-slides", type=positive_int, default=25,
                         help="Maximum number of slides in the outline (default: 25)")
     args = parser.parse_args()
 
@@ -1173,6 +1295,13 @@ def main():
     topic_safe   = args.topic.replace(".", "_")
     output_path  = Path(args.output) if args.output \
         else OUTPUT_DIR / f"{topic_safe}.pptx"
+
+    # ── Preflight checks ─────────────────────────────────────────────────────
+    if not PALETTE_PATH.exists():
+        sys.exit(
+            f"❌ Template file not found: {PALETTE_PATH}\n"
+            f"   Place 'Palette v2.pptx' in the same folder as this script."
+        )
 
     print(f"\n🔬  GCSE Chemistry PowerPoint Generator")
     print(f"    Topic  : {args.topic}{(' – ' + args.title) if args.title else ''}")
@@ -1221,6 +1350,127 @@ def main():
 
     # ── Assemble PowerPoint ───────────────────────────────────────────────────
     print("\n🔧 Assembling PowerPoint …")
+    build_powerpoint(content, output_path)
+
+
+if __name__ == "__main__":
+    main()
+create(
+        model=CLAUDE_MODEL,
+        max_tokens=16384,
+        system=CONTENT_SYSTEM,
+        messages=[{"role": "user", "content": CONTENT_PROMPT.format(
+            research_text=research_text,
+            outline_json=json.dumps(outline, indent=2),
+        )}],
+    )
+    if msg.stop_reason == "max_tokens":
+        raise RuntimeError(
+            "Content response was cut off (hit max_tokens limit). "
+            "The outline may have too many slides — try approving a shorter outline, "
+            "or reduce MAX_RESEARCH_CHARS.")
+    text_blocks = [b for b in msg.content if getattr(b, "type", None) == "text"]
+    if not text_blocks:
+        raise RuntimeError(
+            "Claude returned no text content in the content response. "
+            f"Stop reason: {msg.stop_reason}. Content blocks: {msg.content\!r}"
+        )
+    raw_text = strip_json_fences(text_blocks[0].text)
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        print("Failed to parse content JSON. The response may have been cut off.")
+        print(f"   Raw extracted text (first 500 chars):\n{raw_text[:500]}...\n")
+        raise RuntimeError(f"Content JSON parse failed: {e}") from e
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# MAIN
+# ──────────────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate GCSE Chemistry PowerPoints from AQA research material."
+    )
+    parser.add_argument("--topic",   required=True,
+                        help="Topic code, e.g. 4.1.1")
+    parser.add_argument("--title",   default="",
+                        help="Topic title (optional)")
+    parser.add_argument("--research",
+                        help="Path to research document (.docx or .txt)")
+    parser.add_argument("--content",
+                        help="Pre-generated content JSON (skips Claude API calls)")
+    parser.add_argument("--output",
+                        help="Output .pptx path (default: Generated Presentations/TOPIC.pptx)")
+    parser.add_argument("--save-content", action="store_true",
+                        help="Save generated content JSON alongside the .pptx")
+    def positive_int(value):
+        ivalue = int(value)
+        if ivalue < 1:
+            raise argparse.ArgumentTypeError(f"--max-slides must be at least 1 (got {ivalue})")
+        return ivalue
+    parser.add_argument("--max-slides", type=positive_int, default=25,
+                        help="Maximum number of slides in the outline (default: 25)")
+    args = parser.parse_args()
+
+    # Determine output path
+    topic_safe   = args.topic.replace(".", "_")
+    output_path  = Path(args.output) if args.output \
+        else OUTPUT_DIR / f"{topic_safe}.pptx"
+
+    # ── Preflight checks ─────────────────────────────────────────────────────
+    if not PALETTE_PATH.exists():
+        sys.exit(
+            f"Template file not found: {PALETTE_PATH}\n"
+            f"   Place 'Palette v2.pptx' in the same folder as this script."
+        )
+
+    print(f"\nGCSE Chemistry PowerPoint Generator")
+    print(f"    Topic  : {args.topic}{(' - ' + args.title) if args.title else ''}")
+    print(f"    Output : {output_path}\n")
+
+    # ── Load or generate content ──────────────────────────────────────────────
+    if args.content:
+        print(f"Loading content from {args.content} ...")
+        content = json.loads(Path(args.content).read_text(encoding="utf-8"))
+        if "slides" not in content or not isinstance(content["slides"], list):
+            sys.exit("Content JSON is missing a 'slides' array. Check the file format.")
+
+    else:
+        if not args.research:
+            parser.error("--research is required when --content is not provided.")
+
+        research_path = Path(args.research)
+        if not research_path.is_absolute():
+            research_path = SCRIPT_DIR / research_path
+
+        try:
+            import anthropic
+            client = anthropic.Anthropic()
+        except ImportError:
+            sys.exit("anthropic package not installed. Run: pip install anthropic")
+
+        # Call 1: Generate outline
+        outline = generate_outline(client, args.topic, args.title,
+                                   research_path, args.max_slides)
+
+        # User review
+        approved = review_outline_interactive(outline)
+        if not approved:
+            print("Outline not approved. Exiting.")
+            sys.exit(0)
+
+        # Call 2: Generate full content
+        content = generate_content(client, outline, research_path)
+
+    if args.save_content:
+        content_path = output_path.with_suffix(".json")
+        content_path.write_text(json.dumps(content, indent=2, ensure_ascii=False),
+                                encoding="utf-8")
+        print(f"  Content saved: {content_path}")
+
+    # ── Build PowerPoint ──────────────────────────────────────────────────────
+    print(f"\nBuilding PowerPoint ...")
     build_powerpoint(content, output_path)
 
 
