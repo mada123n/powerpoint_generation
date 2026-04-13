@@ -1,0 +1,40 @@
+1) File is currently not runnable due to syntax/indentation errors
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1367 (and surrounding block)
+   - Evidence: `python -m py_compile generate_powerpoint.py` fails with `IndentationError: unexpected indent`.
+   - Problem: A stray top-level fragment appears after a completed `if __name__ == "__main__": main()` block, breaking parsing.
+   - Suggested fix: Remove the accidental duplicated/stray block and keep a single valid function/body structure.
+
+2) Invalid f-string expression syntax
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1376
+   - Problem: `f"... {msg.content\!r}"` contains `\!r`, which is invalid Python syntax inside f-string expressions.
+   - Suggested fix: Replace with `f"... {msg.content!r}"`.
+
+3) Duplicate function definitions for `main()`
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1269 and 1391
+   - Problem: `main()` is defined twice, which is error-prone and causes one definition to silently override the other.
+   - Suggested fix: Keep exactly one `main()` implementation and delete the duplicate.
+
+4) Duplicate entry-point blocks
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1356-1357 and 1477-1478
+   - Problem: `if __name__ == "__main__": main()` appears twice, and the first one is followed by stray code.
+   - Suggested fix: Keep a single entry-point block at end of file only.
+
+5) Stray top-level `create(...)` call appears outside any function
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1358+
+   - Problem: Even if syntax is fixed, this would execute at import/runtime and raise `NameError` (`create` is undefined), and it duplicates part of `generate_content`.
+   - Suggested fix: Remove this entire top-level duplicated fragment; API call logic should exist only inside `generate_content`.
+
+6) Missing robust validation for `--content` file loading
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1313 and 1435
+   - Problem: `json.loads(Path(args.content).read_text(...))` is unguarded; missing files or malformed JSON crash with raw traceback.
+   - Suggested fix: Catch `FileNotFoundError` and `json.JSONDecodeError`, then exit with a clear user-facing message.
+
+7) Missing preflight existence check for research file before conversion
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1321-1324 and 1443-1445
+   - Problem: `--research` path is accepted but not existence-checked early; later processing fails deep in the workflow.
+   - Suggested fix: Validate `research_path.exists()` immediately after path resolution and fail fast with actionable guidance.
+
+8) Inconsistent save-content behavior between duplicated `main()` blocks
+   - Location: First main: 1345-1349; second main: 1466-1470
+   - Problem: One block saves to `output_path.with_suffix(".content.json")` and ensures parent dir exists; the other saves to `output_path.with_suffix(".json")` without creating parent dir.
+   - Suggested fix: Consolidate to one behavior and ensure parent directory creation before writing.
