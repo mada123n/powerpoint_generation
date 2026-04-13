@@ -964,7 +964,7 @@ def extract_spec_section(topic_code: str) -> str:
         if not re.fullmatch(TOPIC_CODE_PATTERN, topic_code):
             print(
                 f"  ⚠  Topic code '{topic_code}' is malformed; expected format like "
-                f"'4.1.1' or '4.1.1.1'. Skipping spec extraction."
+                f"'4.1.1' or '4.1.1.1'. Returning empty spec text."
             )
             return ""
         parts = topic_code.split(".")
@@ -1196,8 +1196,6 @@ def validate_content_schema(content: dict, source_name: str) -> None:
         slide_type = slide.get("type")
         if not isinstance(slide_type, str) or not slide_type:
             raise ValueError(f"{where} has missing/invalid 'type'.")
-        if slide_type not in SLIDE_VARIANTS:
-            raise ValueError(f"{where} has unsupported type '{slide_type}'.")
 
         _require_fields(slide, ["title"], where)
 
@@ -1243,7 +1241,8 @@ def validate_content_schema(content: dict, source_name: str) -> None:
                     raise ValueError(f"{where} question #{q_i} must be an object.")
                 _require_fields(q, ["question", "answer"], f"{where} question #{q_i}")
         else:
-            # Defensive guard if new slide types are added later without schema rules.
+            if slide_type not in SLIDE_VARIANTS:
+                raise ValueError(f"{where} has unsupported type '{slide_type}'.")
             raise ValueError(f"{where} has no schema validator for slide type '{slide_type}'.")
 
 
