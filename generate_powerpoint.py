@@ -960,6 +960,7 @@ def extract_spec_section(topic_code: str) -> str:
         import pdfplumber
         text_pages = []
         in_section = False
+        # Keep local validation for callers that use this helper outside main().
         if not re.fullmatch(TOPIC_CODE_PATTERN, topic_code):
             print(
                 f"  ⚠  Topic code '{topic_code}' is malformed; expected format like "
@@ -1242,7 +1243,8 @@ def validate_content_schema(content: dict, source_name: str) -> None:
                     raise ValueError(f"{where} question #{q_i} must be an object.")
                 _require_fields(q, ["question", "answer"], f"{where} question #{q_i}")
         else:
-            raise ValueError(f"{where} has an unhandled slide type '{slide_type}'.")
+            # Defensive guard if new slide types are added later without schema rules.
+            raise ValueError(f"{where} has no schema validator for slide type '{slide_type}'.")
 
 
 def generate_outline(client, topic_code: str, topic_title: str,
@@ -1373,7 +1375,7 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(TOPIC_CODE_PATTERN, args.topic):
         sys.exit(
-            "❌ Invalid --topic format. Expected digits separated by dots, e.g. "
+            "❌ Invalid --topic format. Expected X.Y.Z (or X.Y.Z.W), e.g. "
             "'4.1.1' or '4.1.1.1'."
         )
 
