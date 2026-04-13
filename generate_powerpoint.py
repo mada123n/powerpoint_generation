@@ -43,6 +43,7 @@ OUTPUT_DIR    = SCRIPT_DIR / "Generated Presentations"
 
 CLAUDE_MODEL     = "claude-sonnet-4-6"
 MAX_RESEARCH_CHARS = 40_000   # Truncate research doc to stay within context limits
+TOPIC_CODE_PATTERN = r"\d+\.\d+\.\d+(?:\.\d+)?"
 
 # Maps content type names (as Claude tags slides) → Palette v2.pptx template slide file
 # Palette v2 has 12 slides (Visual Explanation variants consolidated;
@@ -959,7 +960,7 @@ def extract_spec_section(topic_code: str) -> str:
         import pdfplumber
         text_pages = []
         in_section = False
-        if not re.fullmatch(r"\d+\.\d+\.\d+(?:\.\d+)?", topic_code):
+        if not re.fullmatch(TOPIC_CODE_PATTERN, topic_code):
             print(
                 f"  ⚠  Topic code '{topic_code}' is malformed; expected format like "
                 f"'4.1.1' or '4.1.1.1'. Skipping spec extraction."
@@ -1228,7 +1229,7 @@ def validate_content_schema(content: dict, source_name: str) -> None:
                 raise ValueError(f"{where} field 'bullets' must be an array.")
         elif slide_type == "Assessment – Calculations":
             _require_fields(slide, ["example1", "example2"], where)
-        else:
+        elif slide_type in question_min:
             _require_fields(slide, ["questions"], where)
             questions = slide["questions"]
             if not isinstance(questions, list):
@@ -1240,6 +1241,8 @@ def validate_content_schema(content: dict, source_name: str) -> None:
                 if not isinstance(q, dict):
                     raise ValueError(f"{where} question #{q_i} must be an object.")
                 _require_fields(q, ["question", "answer"], f"{where} question #{q_i}")
+        else:
+            raise ValueError(f"{where} has an unhandled slide type '{slide_type}'.")
 
 
 def generate_outline(client, topic_code: str, topic_title: str,
@@ -1368,7 +1371,7 @@ def main():
     parser.add_argument("--max-slides", type=positive_int, default=25,
                         help="Maximum number of slides in the outline (default: 25)")
     args = parser.parse_args()
-    if not re.fullmatch(r"\d+\.\d+\.\d+(?:\.\d+)?", args.topic):
+    if not re.fullmatch(TOPIC_CODE_PATTERN, args.topic):
         sys.exit(
             "❌ Invalid --topic format. Expected digits separated by dots, e.g. "
             "'4.1.1' or '4.1.1.1'."
