@@ -971,9 +971,11 @@ def extract_spec_section(topic_code: str) -> str:
             )
             return ""
         parts = topic_code.split(".")
-        # Pattern for next section at same level, e.g. 4.1.2 when we want 4.1.1
-        next_section_re = re.compile(
-            rf'{re.escape(parts[0])}\.{re.escape(parts[1])}\.\d+')
+        # Pattern for next sibling at the same depth.
+        # e.g. 4.1.1   → matches 4.1.2, 4.1.3 …  (stops at next top-level sub-topic)
+        #      4.1.1.1 → matches 4.1.1.2, 4.1.1.3 … (stops within the parent topic only)
+        parent_prefix = re.escape(".".join(parts[:-1]))
+        next_section_re = re.compile(rf'{parent_prefix}\.\d+')
 
         with pdfplumber.open(SPEC_PDF_PATH) as pdf:
             for page in pdf.pages:
@@ -1295,6 +1297,26 @@ def generate_outline(client, topic_code: str, topic_title: str,
     return outline
 
 
+def validate_outline_schema(outline: dict) -> None:
+    """Raise ValueError if the outline is missing required top-level or slide fields."""
+    if not isinstance(outline, dict):
+        raise ValueError("Outline must be a JSON object.")
+    for field in ("topic_code", "topic_title", "slides"):
+        if field not in outline:
+            raise ValueError(f"Outline is missing required field '{field}'.")
+    if not isinstance(outline["slides"], list) or not outline["slides"]:
+        raise ValueError("Outline 'slides' must be a non-empty array.")
+    for i, s in enumerate(outline["slides"], start=1):
+        if not isinstance(s, dict):
+            raise ValueError(f"Outline slide #{i} must be an object.")
+        for field in ("slide_number", "type", "title"):
+            if field not in s:
+                raise ValueError(f"Outline slide #{i} is missing required field '{field}'.")
+        if s["type"] not in SLIDE_VARIANTS:
+            raise ValueError(
+                f"Outline slide #{i} has unsupported type '{s['type']}'.")
+
+
 def review_outline_interactive(outline: dict) -> bool:
     """Display outline and request approval in the terminal."""
     print("\n" + "═" * 65)
@@ -1406,7 +1428,17 @@ def main():
     # ── Load or generate content ──────────────────────────────────────────────
     if args.content:
         print(f"📄 Loading content from {args.content} …")
-        content = json.loads(Path(args.content).read_text(encoding="utf-8"))
+        try:
+            content = json.loads(Path(args.content).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            sys.exit(
+                f"❌ Content file not found: {args.content}\n"
+                f"   Make sure the file exists in the folder you are running the script from."
+            )
+        except OSError as e:
+            sys.exit(f"❌ Could not read content file: {e}")
+        except json.JSONDecodeError as e:
+            sys.exit(f"❌ Content file is not valid JSON: {e}")
         try:
             validate_content_schema(content, "--content JSON")
         except ValueError as e:
@@ -1429,6 +1461,10 @@ def main():
         # Call 1: Generate outline
         outline = generate_outline(client, args.topic, args.title,
                                    research_path, args.max_slides)
+        try:
+            validate_outline_schema(outline)
+        except ValueError as e:
+            sys.exit(f"❌ Generated outline failed validation: {e}")
 
         # User review
         approved = review_outline_interactive(outline)
