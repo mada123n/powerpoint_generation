@@ -1,0 +1,63 @@
+Formatting Implementation Strategy: Reducing Text Overflow in Generated PowerPoints
+
+Context observed in current codebase
+- `generate_powerpoint.py` writes slide content by directly editing OOXML slide XML strings.
+- Text is inserted into shape `<p:txBody>` content, but no autofit policy is currently enforced on the target text containers.
+- This can allow generated text to exceed textbox/shape bounds and appear clipped.
+
+Research findings
+1) PowerPoint supports built-in text fitting modes at the text-frame level.
+   - In PowerPoint UI these are effectively:
+     - Do not autofit
+     - Shrink text on overflow
+     - Resize shape to fit text
+2) In OOXML (DrawingML), these map to children inside `<a:bodyPr>`:
+   - `<a:noAutofit/>` = do not autofit
+   - `<a:normAutofit .../>` = shrink text to fit shape (the behavior requested)
+   - `<a:spAutoFit/>` = grow/resize shape to fit text (analogous shape-related behavior)
+3) `python-pptx` exposes this as `TextFrame.auto_size`:
+   - `MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE` (shrink text)
+   - `MSO_AUTO_SIZE.SHAPE_TO_FIT_TEXT` (resize shape)
+   - `MSO_AUTO_SIZE.NONE`
+   and also has `TextFrame.fit_text(...)` for explicit best-fit font sizing.
+
+Answer to the two direct questions
+- Yes: it is possible to use PowerPoint’s “shrink text on overflow” behavior to reduce formatting errors.
+- Yes: the analogous option for shapes is “resize shape to fit text” (`spAutoFit` / `SHAPE_TO_FIT_TEXT`).
+
+Recommended implementation approach (for this repository)
+1) Keep current architecture (raw OOXML editing) rather than migrating to full `python-pptx` generation.
+   - This is lower risk and aligns with the existing template-duplication workflow.
+2) Add a helper that sets autofit mode on a named shape by editing that shape’s `<a:bodyPr>` block.
+   - Ensure exactly one of `noAutofit`, `normAutofit`, or `spAutoFit` exists after update.
+3) Apply a default policy per content type:
+   - Primary default: use `normAutofit` (shrink text) for text-heavy placeholders and rectangles.
+   - Avoid `spAutoFit` on tightly designed layouts unless explicitly allowed, because changing shape size can break alignment.
+4) Introduce an allowlist for controlled `spAutoFit` usage.
+   - Only enable for shapes where layout expansion is acceptable (if any).
+5) Preserve readability with floor constraints.
+   - Use conservative generation limits and/or post-generation checks so text does not become unreadably small even when shrinking is enabled.
+6) Add fallback handling for extreme overflow.
+   - If content still cannot fit acceptably, truncate/refine text upstream (e.g., tighter bullet limits or shorter example text).
+
+Validation strategy
+- Generate sample decks that intentionally stress long bullets, long definitions, and long assessment answers.
+- Compare before/after on:
+  - clipping occurrences
+  - minimum resulting font legibility
+  - layout stability (especially if any `spAutoFit` is enabled)
+- Keep current repository validation (`python -m py_compile generate_powerpoint.py`) and add manual visual QA on representative topics.
+
+Risk notes
+- `spAutoFit` can distort slide composition by expanding shapes into nearby objects.
+- Aggressive shrink can reduce readability; controls are needed (generation constraints + selective application).
+- Different template slides may require different autofit policies; per-shape configuration is preferable to one global rule.
+
+Suggested phased rollout
+- Phase 1: Enable `normAutofit` only on known overflow-prone text containers.
+- Phase 2: Evaluate visual output and tune per-shape policy.
+- Phase 3 (optional): selectively trial `spAutoFit` on safe shapes.
+
+Net recommendation
+- Implement `normAutofit` first as the safest, highest-impact improvement.
+- Treat shape auto-resize (`spAutoFit`) as optional and tightly scoped.
