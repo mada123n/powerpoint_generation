@@ -1,0 +1,24 @@
+1) Inconsistent relative-path handling for `--content`
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1432 (and contrast with 1451-1453)
+   - Problem: `--content` is read directly from the current working directory, while `--research` is normalized relative to `SCRIPT_DIR`. Running from a different directory can make `--content` fail unexpectedly.
+   - Suggested fix: Normalize `args.content` the same way as `args.research` (resolve relative paths against `SCRIPT_DIR` before reading).
+
+2) Missing preflight existence check for research file
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1451-1453, 1462
+   - Problem: The script does not verify `research_path.exists()` before calling outline/content generation. Missing files can surface later as raw exceptions instead of a clear CLI error.
+   - Suggested fix: Add an early `exists()`/`is_file()` check after path resolution and exit with an actionable error message.
+
+3) False-positive section start in spec extraction
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:983
+   - Problem: Section start is detected with `if topic_code in page_text`, which can match unrelated codes as substrings (e.g., topic `4.1.1` matching `4.1.10`).
+   - Suggested fix: Use a boundary-aware regex match for the exact topic code (escaped), not raw substring containment.
+
+4) Outline validation does not enforce numeric `slide_number`
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1312-1314 and 1326
+   - Problem: Validation only checks field presence, but interactive review formats `slide_number` with `:2d`. Non-integer values can raise a formatting `TypeError`.
+   - Suggested fix: In `validate_outline_schema`, enforce `slide_number` is an integer (and ideally positive) before interactive rendering.
+
+5) Claude response parsing ignores additional text blocks
+   - Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py:1277-1284 and 1358-1366
+   - Problem: The code parses only `text_blocks[0]`. If JSON is split across multiple text blocks, parsing can fail even when the total response is valid.
+   - Suggested fix: Concatenate all text block payloads (in order) before `strip_json_fences` and `json.loads`.
