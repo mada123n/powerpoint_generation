@@ -45,6 +45,9 @@ OUTPUT_DIR    = SCRIPT_DIR / "Generated Presentations"
 
 CLAUDE_MODEL     = "claude-sonnet-4-6"
 MAX_RESEARCH_CHARS = 40_000   # Truncate research doc to stay within context limits
+OUTLINE_MAX_TOKENS = 12_288
+OUTLINE_REVIEW_MAX_TOKENS = 12_288
+CONTENT_MAX_TOKENS = 24_576
 TOPIC_CODE_PATTERN = r"\d+\.\d+\.\d+(?:\.\d+)?"
 
 # Maps content type names (as Claude tags slides) → Palette v2.pptx template slide file
@@ -1345,7 +1348,8 @@ def extract_spec_section(topic_code: str) -> str:
 
 OUTLINE_SYSTEM = (
     "You are an expert GCSE Chemistry teacher designing PowerPoint lessons for AQA GCSE. "
-    "You always ensure ALL AQA specification learning objectives are covered fully. "
+    "You always ensure ALL AQA specification learning objectives are covered fully and in a "
+    "student-friendly teaching sequence. "
     "Output valid JSON only—no markdown, no explanation."
 )
 
@@ -1374,9 +1378,9 @@ AVAILABLE SLIDE TYPES (pick the best fit for each concept):
 
 RULES:
 1. Slide 1 MUST be "Title Slide"
-2. The total number of slides MUST NOT exceed {max_slides} — this is a hard limit
-3. Cover the most important learning objectives from the specification within that limit — prioritise depth over breadth if necessary
-4. Include at least 2 assessment slides
+2. Cover the full specification content shown above with enough depth for GCSE exam preparation
+3. Keep the deck efficient: include only slides that add learning value, avoid repetition, and do not over-allocate slides to any single concept
+4. Include at least 2 assessment slides distributed at logical points in the lesson
 5. Use Visual Explanation slides for diagrams, models, graphs, lab setups
 6. Use Real-World Application slides to ground abstract chemistry in everyday examples
 7. Each slide covers ONE focused concept
@@ -1391,12 +1395,62 @@ Output JSON:
   ]
 }}"""
 
+OUTLINE_REVIEW_SYSTEM = (
+    "You are an expert AQA GCSE Chemistry curriculum reviewer. "
+    "Evaluate lesson outlines for specification coverage and student accessibility. "
+    "If the outline is not good enough, revise it directly and return improved JSON. "
+    "Output valid JSON only—no markdown, no explanation."
+)
+
+OUTLINE_REVIEW_PROMPT = """\
+Review this draft slide outline for topic {topic_code}: {topic_title}.
+
+AQA specification content for this topic:
+{spec_text}
+
+Research document (excerpt):
+{research_text}
+
+Current outline JSON:
+{outline_json}
+
+Review criteria (all are mandatory):
+1. Comprehensive specification alignment: all required learning objectives in the provided AQA section are covered
+2. Logical flow for students: concepts build clearly from foundational to more complex ideas
+3. Depth calibration: key concepts are explained in sufficient depth for GCSE exam success
+4. Over-explanation check: no concept is given unnecessary repetition or too many slides relative to its importance
+5. Understanding checks: assessment and consolidation opportunities appear at logical intervals
+6. Accessibility and tone fit: the planned learning journey is warm, encouraging, and accessible to GCSE students
+
+Decision rules:
+- If the outline fully satisfies the criteria, return decision "approve"
+- If not, return decision "revise" and provide a fully revised outline that fixes all issues, then it will be reviewed again
+
+Output schema:
+{{
+  "decision": "approve" | "revise",
+  "review_summary": "short summary of strengths/gaps",
+  "required_changes": ["change 1", "change 2"],
+  "outline": {{
+    "topic_code": "{topic_code}",
+    "topic_title": "{topic_title}",
+    "slides": [
+      {{"slide_number": 1, "type": "Title Slide", "title": "...", "brief_description": "..."}},
+      ...
+    ]
+  }}
+}}
+
+When decision is "approve", you may return the original outline in "outline".
+When decision is "revise", "outline" is mandatory and must be the improved full outline."""
+
 CONTENT_SYSTEM = (
     "You are an expert AQA GCSE Chemistry teacher writing slide content for 14–16 year olds "
     "preparing for their exams. Every bullet point, definition, and explanation must be as "
     "informative and precise as possible — include key scientific terms, units, and the level "
     "of detail a student needs to answer exam questions confidently. Accuracy and depth are the "
-    "top priority. Output valid JSON only — no markdown, no explanation."
+    "top priority, delivered with a warm, encouraging, student-friendly tone. "
+    "Output valid JSON only — no markdown, no explanation."
 )
 
 CONTENT_PROMPT = """\
@@ -1413,7 +1467,7 @@ MANDATORY FORMATTING RULES — apply to ALL text in every field without exceptio
 1. BULLET POINTS: Every bullet must be a complete sentence. Do not end any bullet with a full stop (period).
 2. NO HYPHENS OR DASHES: Do not use hyphens, en dashes, or em dashes anywhere — not in bullets, titles, definitions, examples, questions, answers, or any other field. Rewrite any sentence that would naturally use a dash so it reads fluently without one.
 3. NO BLOCK CAPITALS for emphasis: Only use capitals where scientifically required, e.g. chemical formulas (NaOH, H2SO4, CO2). Never capitalise a whole word for emphasis.
-4. TONE: Friendly, formal, and accessible to a 15-year-old student. Avoid jargon unless required by the specification; always define new terms when they are first introduced.
+4. TONE: Warm, friendly, and accessible to a 15-year-old student. Sound like a supportive teacher, not a cold syllabus. Avoid jargon unless required by the specification; always define new terms when they are first introduced.
 5. CALCULATIONS: Always include units at every step of a worked example, not just the final answer. Write units in full where possible (e.g. g/mol, not just mol) so the student can see how units cancel. For example: Moles of NaOH = 100 g divided by 40 g/mol = 2.5 mol.
 6. DEPTH: The most important criterion is comprehensive coverage of the specification learning objectives. Do not compress content — if a concept requires more detail, provide it. Include precise values, units, and key terms wherever they help a student answer an exam question.
 7. LENGTH TARGETS (use the full allowance — thin content leaves students underprepared; text will overflow only if you exceed the maximum):
@@ -1600,21 +1654,20 @@ def validate_content_schema(content: dict, source_name: str) -> None:
 
 
 def generate_outline(client, topic_code: str, topic_title: str,
-                     research_path: Path, max_slides: int = 25) -> dict:
+                     research_path: Path) -> dict:
     print("  Calling Claude API for outline …")
     research_text = load_research_text(research_path, topic_code)[:MAX_RESEARCH_CHARS]
     spec_text     = extract_spec_section(topic_code)[:10_000]
 
     msg = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=8192,
+        max_tokens=OUTLINE_MAX_TOKENS,
         system=OUTLINE_SYSTEM,
         messages=[{"role": "user", "content": OUTLINE_PROMPT.format(
             topic_code=topic_code,
             topic_title=topic_title,
             spec_text=spec_text,
             research_text=research_text,
-            max_slides=max_slides,
         )}],
     )
     if msg.stop_reason == "max_tokens":
@@ -1634,12 +1687,6 @@ def generate_outline(client, topic_code: str, topic_title: str,
         print("❌ Failed to parse outline JSON. The response may have been cut off mid-generation.")
         print(f"   Raw extracted text (first 500 chars):\n{raw_text[:500]}...\n")
         raise RuntimeError(f"Outline JSON parse failed: {e}") from e
-
-    # Hard enforcement: trim to max_slides if Claude went slightly over
-    slides = outline.get("slides", [])
-    if len(slides) > max_slides:
-        print(f"  ⚠  Outline had {len(slides)} slides — trimming to {max_slides}")
-        outline["slides"] = slides[:max_slides]
 
     return outline
 
@@ -1683,6 +1730,77 @@ def review_outline_interactive(outline: dict) -> bool:
             return False
 
 
+def auto_review_outline(client, outline: dict, research_path: Path,
+                        max_review_rounds: int = 3) -> dict:
+    """Run iterative Claude-based outline QA until approved or review limit reached."""
+    review_outline = outline
+    topic_code = outline.get("topic_code", "")
+    topic_title = outline.get("topic_title", "")
+    research_text = load_research_text(research_path, topic_code)[:MAX_RESEARCH_CHARS]
+    spec_text = extract_spec_section(topic_code)[:10_000]
+
+    for round_num in range(1, max_review_rounds + 1):
+        print(f"  Running automated outline review (round {round_num}/{max_review_rounds}) …")
+        msg = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=OUTLINE_REVIEW_MAX_TOKENS,
+            system=OUTLINE_REVIEW_SYSTEM,
+            messages=[{"role": "user", "content": OUTLINE_REVIEW_PROMPT.format(
+                topic_code=topic_code,
+                topic_title=topic_title,
+                spec_text=spec_text,
+                research_text=research_text,
+                outline_json=json.dumps(review_outline, indent=2),
+            )}],
+        )
+        if msg.stop_reason == "max_tokens":
+            raise RuntimeError(
+                "Outline review response was cut off (hit max_tokens limit). "
+                "Try reducing MAX_RESEARCH_CHARS or topic scope.")
+        text_blocks = [b for b in msg.content if getattr(b, "type", None) == "text"]
+        if not text_blocks:
+            raise RuntimeError(
+                "Claude returned no text content in the outline review response. "
+                f"Stop reason: {msg.stop_reason}. Content blocks: {msg.content!r}"
+            )
+        raw_text = strip_json_fences(text_blocks[0].text)
+        try:
+            review_result = json.loads(raw_text)
+        except json.JSONDecodeError as e:
+            print("❌ Failed to parse outline review JSON.")
+            print(f"   Raw extracted text (first 500 chars):\n{raw_text[:500]}...\n")
+            raise RuntimeError(f"Outline review JSON parse failed: {e}") from e
+
+        decision = str(review_result.get("decision", "")).strip().lower()
+        review_summary = review_result.get("review_summary", "")
+        if review_summary:
+            print(f"    Review summary: {review_summary}")
+
+        revised_outline = review_result.get("outline")
+        if decision == "approve":
+            if isinstance(revised_outline, dict):
+                validate_outline_schema(revised_outline)
+                return revised_outline
+            validate_outline_schema(review_outline)
+            return review_outline
+
+        if decision == "revise":
+            if not isinstance(revised_outline, dict):
+                raise RuntimeError(
+                    "Outline review requested revision but did not provide an outline object.")
+            validate_outline_schema(revised_outline)
+            review_outline = revised_outline
+            continue
+
+        raise RuntimeError(
+            f"Outline review returned invalid decision '{decision}'. "
+            "Expected 'approve' or 'revise'.")
+
+    raise RuntimeError(
+        "Automated outline review reached max rounds without approval. "
+        "Please rerun with a narrower topic or adjust prompts.")
+
+
 def generate_content(client, outline: dict, research_path: Path) -> dict:
     print("  Calling Claude API for full content (may take a minute) …")
     research_text = load_research_text(
@@ -1690,7 +1808,7 @@ def generate_content(client, outline: dict, research_path: Path) -> dict:
 
     msg = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=16384,
+        max_tokens=CONTENT_MAX_TOKENS,
         system=CONTENT_SYSTEM,
         messages=[{"role": "user", "content": CONTENT_PROMPT.format(
             research_text=research_text,
@@ -1700,8 +1818,7 @@ def generate_content(client, outline: dict, research_path: Path) -> dict:
     if msg.stop_reason == "max_tokens":
         raise RuntimeError(
             "Content response was cut off (hit max_tokens limit). "
-            "The outline may have too many slides — try approving a shorter outline, "
-            "or reduce MAX_RESEARCH_CHARS.")
+            "Try reducing MAX_RESEARCH_CHARS or narrowing topic scope.")
     text_blocks = [b for b in msg.content if getattr(b, "type", None) == "text"]
     if not text_blocks:
         raise RuntimeError(
@@ -1737,13 +1854,6 @@ def main():
                         help="Output .pptx path (default: Generated Presentations/TOPIC.pptx)")
     parser.add_argument("--save-content", action="store_true",
                         help="Save generated content JSON alongside the .pptx")
-    def positive_int(value):
-        ivalue = int(value)
-        if ivalue < 1:
-            raise argparse.ArgumentTypeError(f"--max-slides must be at least 1 (got {ivalue})")
-        return ivalue
-    parser.add_argument("--max-slides", type=positive_int, default=25,
-                        help="Maximum number of slides in the outline (default: 25)")
     args = parser.parse_args()
     if not re.fullmatch(TOPIC_CODE_PATTERN, args.topic):
         sys.exit(
@@ -1807,11 +1917,19 @@ def main():
 
         # Call 1: Generate outline
         outline = generate_outline(client, args.topic, args.title,
-                                   research_path, args.max_slides)
+                                   research_path)
         try:
             validate_outline_schema(outline)
         except ValueError as e:
             sys.exit(f"❌ Generated outline failed validation: {e}")
+
+        # Automated Claude review (can revise and re-review before approval)
+        try:
+            outline = auto_review_outline(client, outline, research_path)
+        except ValueError as e:
+            sys.exit(f"❌ Auto-reviewed outline failed validation: {e}")
+        except RuntimeError as e:
+            sys.exit(f"❌ Automated outline review failed: {e}")
 
         # User review
         approved = review_outline_interactive(outline)
