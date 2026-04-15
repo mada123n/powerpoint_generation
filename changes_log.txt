@@ -1,0 +1,74 @@
+1) Removed hard maximum slide limit from outline generation
+Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py
+- Removed the `--max-slides` CLI argument and its validation helper.
+- Removed `max_slides` from `generate_outline(...)` inputs.
+- Removed prompt rule enforcing a hard slide cap.
+- Removed post-generation trimming that cut outlines down to a max slide count.
+Rationale:
+- The previous hard cap could force coverage gaps by truncating valid topic content.
+- This change allows outline size to match topic scope while still guiding Claude to avoid unnecessary slides.
+
+2) Added explicit “efficient but complete” outline guidance
+Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py
+- Updated outline rules to require full specification coverage, avoid redundancy, and keep deck length purposeful.
+- Kept a requirement for distributed assessment slides at logical points.
+Rationale:
+- This preserves comprehensive coverage while preventing unnecessary deck inflation.
+
+3) Increased Claude token budgets for larger outputs
+Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py
+- Added `OUTLINE_MAX_TOKENS = 12_288`.
+- Added `OUTLINE_REVIEW_MAX_TOKENS = 12_288`.
+- Added `CONTENT_MAX_TOKENS = 24_576`.
+- Switched API calls to use these constants.
+- Updated truncation error messaging to reflect broader scope handling.
+Rationale:
+- Larger topics and deeper content were at risk of being cut off with previous limits.
+- Higher budgets reduce premature truncation during outline/content/review calls.
+
+4) Implemented automated Claude outline review loop (regenerate-or-approve workflow)
+Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py
+- Added `OUTLINE_REVIEW_SYSTEM` and `OUTLINE_REVIEW_PROMPT`.
+- Added `auto_review_outline(...)` function that:
+  - Evaluates outline against AQA coverage and accessibility criteria.
+  - Accepts decision `"approve"` or `"revise"`.
+  - Requires a full revised outline on `"revise"`.
+  - Re-validates schema and re-runs review up to 3 rounds.
+  - Returns approved outline or fails clearly if no approval is reached.
+- Integrated this automated review step in `main()` after initial outline generation and schema validation.
+Rationale:
+- Introduces the requested quality-control stage before human approval.
+- Ensures the model can iteratively improve outlines, then pass an approved version to the user.
+
+5) Preserved human verification stage after automated approval
+Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py
+- Left `review_outline_interactive(...)` in place and still required before content generation.
+Rationale:
+- Meets requirement that final reviewed outline is passed to a human for manual verification.
+
+6) Adjusted writing-tone instruction to be warmer and more student-friendly
+Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py
+- Updated system and content prompt tone instructions to emphasize warm, encouraging, accessible teaching language.
+Rationale:
+- Addresses concern that generated content sounded too cold/syllabus-like.
+
+7) Validation performed
+Location: /home/runner/work/powerpoint_generation/powerpoint_generation
+- Baseline run before changes: `python -m py_compile generate_powerpoint.py` (pass).
+- Post-change run: `python -m py_compile generate_powerpoint.py` (pass).
+Rationale:
+- Confirms syntax-level correctness for the modified script in this repository’s current validation workflow.
+
+8) Minor robustness/readability follow-up from automated review feedback
+Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py
+- Renamed loop variable `round_num` to `review_round` in automated outline review for clearer intent.
+- Made max-rounds failure guidance more actionable by suggesting narrower topic scope, prompt scope reduction, or increasing review rounds.
+Rationale:
+- Improves maintainability and operator troubleshooting without changing core behavior.
+
+9) Prompt consistency refinement (no hyphen phrasing conflicts)
+Location: /home/runner/work/powerpoint_generation/powerpoint_generation/generate_powerpoint.py
+- Rephrased internal prompt text from “student-friendly” to “friendly to students”.
+- Rephrased tone line to “supportive teacher rather than a formal syllabus.”
+Rationale:
+- Keeps instruction language consistent with the content rule that prohibits hyphens in generated slide text, reducing contradictory model guidance.

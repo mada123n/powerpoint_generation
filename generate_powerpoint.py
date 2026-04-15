@@ -1349,7 +1349,7 @@ def extract_spec_section(topic_code: str) -> str:
 OUTLINE_SYSTEM = (
     "You are an expert GCSE Chemistry teacher designing PowerPoint lessons for AQA GCSE. "
     "You always ensure ALL AQA specification learning objectives are covered fully and in a "
-    "student-friendly teaching sequence. "
+    "teaching sequence that is friendly to students. "
     "Output valid JSON only—no markdown, no explanation."
 )
 
@@ -1449,7 +1449,7 @@ CONTENT_SYSTEM = (
     "preparing for their exams. Every bullet point, definition, and explanation must be as "
     "informative and precise as possible — include key scientific terms, units, and the level "
     "of detail a student needs to answer exam questions confidently. Accuracy and depth are the "
-    "top priority, delivered with a warm, encouraging, student-friendly tone. "
+    "top priority, delivered with a warm, encouraging tone that is friendly to students. "
     "Output valid JSON only — no markdown, no explanation."
 )
 
@@ -1467,7 +1467,7 @@ MANDATORY FORMATTING RULES — apply to ALL text in every field without exceptio
 1. BULLET POINTS: Every bullet must be a complete sentence. Do not end any bullet with a full stop (period).
 2. NO HYPHENS OR DASHES: Do not use hyphens, en dashes, or em dashes anywhere — not in bullets, titles, definitions, examples, questions, answers, or any other field. Rewrite any sentence that would naturally use a dash so it reads fluently without one.
 3. NO BLOCK CAPITALS for emphasis: Only use capitals where scientifically required, e.g. chemical formulas (NaOH, H2SO4, CO2). Never capitalise a whole word for emphasis.
-4. TONE: Warm, friendly, and accessible to a 15-year-old student. Sound like a supportive teacher, not a cold syllabus. Avoid jargon unless required by the specification; always define new terms when they are first introduced.
+4. TONE: Warm, friendly, and accessible to a 15-year-old student. Sound like a supportive teacher rather than a formal syllabus. Avoid jargon unless required by the specification; always define new terms when they are first introduced.
 5. CALCULATIONS: Always include units at every step of a worked example, not just the final answer. Write units in full where possible (e.g. g/mol, not just mol) so the student can see how units cancel. For example: Moles of NaOH = 100 g divided by 40 g/mol = 2.5 mol.
 6. DEPTH: The most important criterion is comprehensive coverage of the specification learning objectives. Do not compress content — if a concept requires more detail, provide it. Include precise values, units, and key terms wherever they help a student answer an exam question.
 7. LENGTH TARGETS (use the full allowance — thin content leaves students underprepared; text will overflow only if you exceed the maximum):
@@ -1739,8 +1739,8 @@ def auto_review_outline(client, outline: dict, research_path: Path,
     research_text = load_research_text(research_path, topic_code)[:MAX_RESEARCH_CHARS]
     spec_text = extract_spec_section(topic_code)[:10_000]
 
-    for round_num in range(1, max_review_rounds + 1):
-        print(f"  Running automated outline review (round {round_num}/{max_review_rounds}) …")
+    for review_round in range(1, max_review_rounds + 1):
+        print(f"  Running automated outline review (round {review_round}/{max_review_rounds}) …")
         msg = client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=OUTLINE_REVIEW_MAX_TOKENS,
@@ -1798,7 +1798,8 @@ def auto_review_outline(client, outline: dict, research_path: Path,
 
     raise RuntimeError(
         "Automated outline review reached max rounds without approval. "
-        "Please rerun with a narrower topic or adjust prompts.")
+        "Please rerun with a narrower topic, reduce review scope in OUTLINE_REVIEW_PROMPT, "
+        "or increase max_review_rounds.")
 
 
 def generate_content(client, outline: dict, research_path: Path) -> dict:
