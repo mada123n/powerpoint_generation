@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 generate_powerpoint.py – GCSE Chemistry PowerPoint Generator
 
@@ -22,6 +23,7 @@ Requirements:
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -69,6 +71,42 @@ REVEAL_BOX_SHAPE_IDS = {
     "Assessment – Concepts (1 question)":  [19],        # Rectangle 18
     "Assessment – Concepts (2 questions)": [3, 19],     # Rectangle 2, Rectangle 18
     "Assessment – Concepts (3 questions)": [3, 35, 19], # Rectangle 2, Rectangle 34, Rectangle 18
+}
+
+# Custom Rectangle shapes that receive generated text but have no autofit set in
+# the Palette v2 template (their <a:bodyPr> is self-closing with no autofit child).
+# The Title and Content Placeholder 2 shapes already have <a:normAutofit/> in the
+# template and are NOT listed here.
+AUTOFIT_SHAPE_NAMES: frozenset = frozenset({
+    "Rectangle 3",   # definition box, example box, RW Short card 1, RW Long card 1
+    "Rectangle 20",  # RW Short card 2
+    "Rectangle 13",  # RW Long card 2
+    "Rectangle 24",  # RW Long card 3
+    "Rectangle 5",   # Assessment Calculations example 1
+    "Rectangle 2",   # Assessment Calculations example 2; Assessment answer Q1 (2Q, 3Q)
+    "Rectangle 12",  # Assessment question box (1Q, 2Q, 3Q)
+    "Rectangle 18",  # Assessment answer box (all Q slides)
+    "Rectangle 30",  # Assessment question Q2 (3Q)
+    "Rectangle 34",  # Assessment answer Q2 (3Q)
+    "TextBox 7",     # Visual Explanation observation bullets
+})
+
+# Character limits per field — mirrors CONTENT_PROMPT Rule 7.
+# Used by audit_content_lengths() to warn when generated content exceeds design limits.
+FIELD_CHAR_LIMITS = {
+    "definition":    100,
+    "example":       120,
+    "bullet_short":  130,   # Short / Definition / With Example slides
+    "bullet_long":   110,   # Long slides
+    "rw_name":        50,
+    "rw_desc_short": 200,
+    "rw_desc_long":   90,
+    "question_1q":   180,
+    "question_2q":   140,
+    "question_3q":    90,
+    "answer_1q":     220,
+    "answer_2q":     180,
+    "answer_3q":      90,
 }
 
 
@@ -264,6 +302,227 @@ def remove_shape(xml: str, shape_name: str) -> str:
     return xml[:sp_start] + xml[sp_end:]
 
 
+def set_body_autofit(xml: str, shape_name: str) -> str:
+    """
+    Ensure a named shape uses <a:normAutofit/> in its <a:bodyPr> so PowerPoint
+    shrinks text to fit rather than clipping on overflow.
+
+    Handles both forms that appear in Palette v2:
+      Self-closing: <a:bodyPr rtlCol="0" anchor="ctr"/>
+                 → <a:bodyPr rtlCol="0" anchor="ctr"><a:normAutofit/></a:bodyPr>
+      Open form:  <a:bodyPr><a:noAutofit/></a:bodyPr>
+                 → <a:bodyPr><a:normAutofit/></a:bodyPr>
+
+    If <a:normAutofit> is already present the shape is left untouched.
+    No-ops silently if the shape is not found on this slide.
+
+    NOTE: The Title 1 and Content Placeholder 2 shapes already have normAutofit
+    in the Palette v2 template and do not need to be passed to this function.
+    """
+    name_marker = f'name="{shape_name}"'
+    name_idx = xml.find(name_marker)
+    if name_idx == -1:
+        return xml
+
+    # Bound the search to this shape's <p:sp> element
+    sp_end = xml.find("</p:sp>", name_idx)
+    search_end = sp_end if sp_end != -1 else len(xml)
+
+    bodypr_start = xml.find("<a:bodyPr", name_idx)
+    if bodypr_start == -1 or bodypr_start > search_end:
+        return xml
+
+    tag_end = xml.find(">", bodypr_start)
+    if tag_end == -1:
+        return xml
+
+    is_self_closing = xml[tag_end - 1] == "/"
+
+    if is_self_closing:
+        # <a:bodyPr attrs/> → <a:bodyPr attrs><a:normAutofit/></a:bodyPr>
+        opening_tag = xml[bodypr_start:tag_end - 1]  # strip trailing /
+        return (xml[:bodypr_start]
+                + opening_tag + "><a:normAutofit/></a:bodyPr>"
+                + xml[tag_end + 1:])
+    else:
+        # Open form — find closing tag
+        bodypr_end = xml.find("</a:bodyPr>", tag_end)
+        if bodypr_end == -1:
+            return xml
+
+        inner = xml[tag_end + 1:bodypr_end]
+
+        # normAutofit already present — leave untouched
+        if "<a:normAutofit" in inner:
+            return xml
+
+        # Replace noAutofit or spAutoFit with normAutofit; otherwise append it
+        if "<a:noAutofit" in inner:
+            inner = re.sub(r"<a:noAutofit\s*/>", "<a:normAutofit/>", inner)
+        elif "<a:spAutoFit" in inner:
+            inner = re.sub(r"<a:spAutoFit\s*/>", "<a:normAutofit/>", inner)
+        else:
+            inner = inner.rstrip() + "\n<a:normAutofit/>\n"
+
+        return (xml[:tag_end + 1]
+                + inner
+                + "</a:bodyPr>"
+                + xml[bodypr_end + len("</a:bodyPr>"):])
+
+
+def apply_autofit_pass(xml: str) -> str:
+    """Apply normAutofit to all content rectangle shapes in a slide XML, then
+    pre-calculate and set fontScale so shrinking takes effect on first open.
+    Called once per slide after the content editor has run."""
+    for shape_name in AUTOFIT_SHAPE_NAMES:
+        xml = set_body_autofit(xml, shape_name)
+        xml = update_autofit_scale(xml, shape_name)
+    return xml
+
+
+def _extract_for_scale(xml: str, shape_name: str):
+    """
+    Extract (paragraphs, cx_emu, cy_emu, sz_emu) from a named shape.
+
+    paragraphs  – list of plain-text strings, one per <a:p>
+    cx_emu      – shape width in EMU
+    cy_emu      – shape height in EMU
+    sz_emu      – font height in EMU (derived from first <a:rPr sz="..."> found)
+
+    Returns None if the shape is not found or required attributes are missing.
+    """
+    name_marker = f'name="{shape_name}"'
+    name_idx = xml.find(name_marker)
+    if name_idx == -1:
+        return None
+
+    sp_end_idx = xml.find("</p:sp>", name_idx)
+    if sp_end_idx == -1:
+        return None
+    sp_xml = xml[name_idx:sp_end_idx]
+
+    # Shape extent (cx, cy) — stored in <a:ext cx="..." cy="..."/>
+    ext_match = re.search(r'<a:ext\s+cx="(\d+)"\s+cy="(\d+)"', sp_xml)
+    if not ext_match:
+        return None
+    cx_emu = int(ext_match.group(1))
+    cy_emu = int(ext_match.group(2))
+
+    # Font size from first <a:rPr sz="..."> — in hundredths of a point
+    # (e.g. sz="1800" → 18 pt)
+    sz_match = re.search(r'<a:rPr[^>]*\ssz="(\d+)"', sp_xml)
+    if not sz_match:
+        return None
+    sz_hpt = int(sz_match.group(1))
+    sz_emu = sz_hpt * 127  # 1/100 pt = 127 EMU  (1 pt = 12700 EMU)
+
+    # Paragraphs: concatenate all <a:t> runs within each <a:p>
+    paragraphs = []
+    for p_match in re.finditer(r'<a:p>(.*?)</a:p>', sp_xml, re.DOTALL):
+        runs = re.findall(r'<a:t>(.*?)</a:t>', p_match.group(1), re.DOTALL)
+        paragraphs.append("".join(runs))
+
+    return paragraphs, cx_emu, cy_emu, sz_emu
+
+
+def _calc_font_scale(paragraphs: list, cx_emu: int, cy_emu: int,
+                     sz_emu: int) -> int:
+    """
+    Estimate the fontScale (integer, 1000–100000) needed so all paragraphs
+    fit inside the shape bounds.
+
+    Conservative geometry model:
+      usable width  = cx * 0.88  (OOXML shapes carry ~6% left + 6% right inset)
+      char width    = sz * 0.55  (average for Calisto MT / proportional body font)
+      line height   = sz * 1.35  (1.0 cap-height + 0.35 leading)
+      para gap      = 57150 EMU  (≈ 4.5 pt inter-paragraph spacing in Palette v2)
+      usable height = cy * 0.92  (small top/bottom inset)
+
+    Minimum scale returned: 65000 (65 %).  Text that would need more shrinking
+    than that is handled by generation-side char-limit constraints instead.
+    Returns 100000 when text already fits without scaling.
+    """
+    USABLE_W = 0.88
+    CHAR_W   = 0.55
+    LINE_H   = 1.35
+    PARA_GAP = 57150   # EMU
+    MIN_SCALE = 65000
+
+    usable_w = cx_emu * USABLE_W
+    usable_h = cy_emu * 0.92
+    chars_per_line = max(1.0, usable_w / (sz_emu * CHAR_W))
+    line_h_emu     = sz_emu * LINE_H
+
+    total_lines = 0.0
+    for i, para in enumerate(paragraphs):
+        stripped = para.strip()
+        if not stripped:
+            total_lines += 0.5   # blank paragraph = half-line gap
+            continue
+        total_lines += math.ceil(len(stripped) / chars_per_line)
+        if i < len(paragraphs) - 1:
+            total_lines += PARA_GAP / line_h_emu
+
+    if total_lines <= 0 or usable_h <= 0:
+        return 100000
+
+    lines_available = usable_h / line_h_emu
+    if total_lines <= lines_available:
+        return 100000
+
+    raw_scale = int((lines_available / total_lines) * 100000)
+    return max(raw_scale, MIN_SCALE)
+
+
+def update_autofit_scale(xml: str, shape_name: str) -> str:
+    """
+    Pre-calculate and set fontScale on the <a:normAutofit/> element of the
+    named shape so that PowerPoint renders text shrunk-to-fit on first open,
+    without needing any interactive recalculation.
+
+    Must be called after set_body_autofit (which guarantees normAutofit exists).
+    No-ops silently if the shape or its normAutofit element cannot be found,
+    or if the calculated scale is 100000 (no shrinking needed).
+    """
+    extracted = _extract_for_scale(xml, shape_name)
+    if extracted is None:
+        return xml
+
+    paragraphs, cx_emu, cy_emu, sz_emu = extracted
+    font_scale = _calc_font_scale(paragraphs, cx_emu, cy_emu, sz_emu)
+
+    if font_scale >= 100000:
+        return xml   # text fits — leave normAutofit with no fontScale attr
+
+    # Locate the normAutofit element within this shape's <p:sp>
+    name_marker = f'name="{shape_name}"'
+    name_idx = xml.find(name_marker)
+    if name_idx == -1:
+        return xml
+    sp_end_idx = xml.find("</p:sp>", name_idx)
+    search_end = sp_end_idx if sp_end_idx != -1 else len(xml)
+
+    na_idx = xml.find("<a:normAutofit", name_idx)
+    if na_idx == -1 or na_idx > search_end:
+        return xml
+
+    na_end = xml.find(">", na_idx)
+    if na_end == -1:
+        return xml
+
+    new_tag = f'<a:normAutofit fontScale="{font_scale}" lnSpcReduction="0"/>'
+
+    if xml[na_end - 1] == "/":
+        # Self-closing: <a:normAutofit ... />
+        return xml[:na_idx] + new_tag + xml[na_end + 1:]
+    else:
+        # Open form: <a:normAutofit ...>...</a:normAutofit>
+        close_idx = xml.find("</a:normAutofit>", na_end)
+        if close_idx == -1:
+            return xml
+        return xml[:na_idx] + new_tag + xml[close_idx + len("</a:normAutofit>"):]
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # PARAGRAPH BUILDERS
 # ──────────────────────────────────────────────────────────────────────────────
@@ -302,10 +561,27 @@ def para_bullet(text: str) -> str:
 
 def para_text(text: str, bold: bool = False, italic: bool = False,
               color_hex: str = "1A1A2E", scheme_color: str = None,
-              center: bool = False) -> str:
-    """Plain paragraph for text boxes (definition box, example cards, etc.)."""
+              center: bool = False, sz: int = 1800) -> str:
+    """Plain paragraph for content rectangle text boxes.
+
+    An explicit sz (font size in hundredths of a point) is required here rather
+    than inheriting from the slide master, because master inheritance on
+    non-placeholder rectangle shapes defaults to 20pt (2000) which is too large
+    for content-dense boxes and — critically — prevents normAutofit from
+    functioning: PowerPoint only applies normAutofit shrinking when it
+    calculates the fontScale itself at edit time, and will not recalculate it
+    when opening a programmatically generated file that has normAutofit set to
+    100% scale (no fontScale attribute). Setting an explicit, fit-for-purpose
+    font size here makes text fit reliably without needing normAutofit to
+    recalculate. normAutofit on these shapes then acts as a genuine last-resort
+    safety net for edge cases rather than the primary fit mechanism.
+
+    Default sz=1800 (18pt) is a good balance: large enough to be readable,
+    small enough that content within the design character limits fits
+    comfortably within the shape bounds."""
     b_attr = ' b="1"' if bold else ''
     i_attr = ' i="1"' if italic else ''
+    sz_attr = f' sz="{sz}"'
     ppr_xml = '            <a:pPr algn="ctr"/>\n' if center else ''
 
     if scheme_color:
@@ -317,7 +593,7 @@ def para_text(text: str, bold: bool = False, italic: bool = False,
         f'          <a:p>\n'
         f'{ppr_xml}'
         f'            <a:r>\n'
-        f'              <a:rPr lang="en-GB"{b_attr}{i_attr} dirty="0">\n'
+        f'              <a:rPr lang="en-GB"{sz_attr}{b_attr}{i_attr} dirty="0">\n'
         f'                {fill_xml}\n'
         f'              </a:rPr>\n'
         f'              <a:t>{xml_escape(text)}</a:t>\n'
@@ -327,11 +603,15 @@ def para_text(text: str, bold: bool = False, italic: bool = False,
 
 
 def para_reveal(text: str) -> str:
-    """Italic paragraph for click-to-reveal answer boxes."""
+    """Italic paragraph for click-to-reveal answer boxes.
+    sz=1800 (18pt) rather than 20pt — same reasoning as para_text: the master
+    default for non-placeholder shapes is 20pt which can overflow answer boxes,
+    and normAutofit will not self-correct this in a programmatically generated
+    file without an interactive recalculation trigger."""
     return (
         f'          <a:p>\n'
         f'            <a:r>\n'
-        f'              <a:rPr lang="en-GB" sz="2000" i="1" dirty="0">\n'
+        f'              <a:rPr lang="en-GB" sz="1800" i="1" dirty="0">\n'
         f'                <a:solidFill><a:schemeClr val="tx1"/></a:solidFill>\n'
         f'              </a:rPr>\n'
         f'              <a:t>{xml_escape(text)}</a:t>\n'
@@ -569,9 +849,9 @@ def edit_assessment_calculations(xml: str, slide: dict) -> str:
     """Assessment – Calculations: title + 2 worked examples + reference table."""
     xml = set_shape_text(xml, "Title 1", para_title(slide.get("title", "")))
     xml = set_shape_text(xml, "Rectangle 5",
-                         para_text(slide.get("example1", "")))
+                         para_text(slide.get("example1", ""), sz=1600))
     xml = set_shape_text(xml, "Rectangle 2",
-                         para_text(slide.get("example2", "")))
+                         para_text(slide.get("example2", ""), sz=1600))
     xml = remove_shape(xml, "Rectangle 4")
     return xml
 
@@ -687,6 +967,7 @@ def apply_slide_content(slide_path: Path, slide: dict) -> None:
         return
     xml = slide_path.read_text(encoding="utf-8")
     xml = editor(xml, slide)
+    xml = apply_autofit_pass(xml)   # ensure content rectangles shrink on overflow
     slide_path.write_text(xml, encoding="utf-8")
 
 
@@ -778,6 +1059,72 @@ def update_slide_id_list(unpacked_dir: Path,
         flags=re.DOTALL,
     )
     pres_path.write_text(pres_xml, encoding="utf-8")
+
+
+def audit_content_lengths(content: dict) -> None:
+    """
+    Log warnings for any text fields that exceed their design character limits
+    (defined in FIELD_CHAR_LIMITS).
+
+    This is the practical implementation of the '12pt minimum' requirement:
+    normAutofit will shrink text to fit, but if content significantly exceeds
+    the limits the font may drop below 12pt and become unreadable. Any field
+    flagged here should be shortened before the final run.
+
+    Note: automatic truncation is intentionally NOT implemented — silently
+    cutting GCSE explanations mid-sentence risks producing inaccurate content.
+    """
+    overflows: list[str] = []
+
+    for slide in content.get("slides", []):
+        s_type = slide.get("type", "")
+        sn     = slide.get("slide_number", "?")
+
+        def flag(label: str, text: str, limit: int) -> None:
+            if len(text) > limit:
+                preview = text[:60] + ("…" if len(text) > 60 else "")
+                overflows.append(
+                    f"  Slide {sn} [{s_type}] {label}: "
+                    f"{len(text)} chars (limit {limit}) — '{preview}'"
+                )
+
+        is_long = "Long" in s_type
+        is_3q   = "3 question" in s_type
+        is_2q   = "2 question" in s_type
+
+        if defn := slide.get("definition"):
+            flag("definition", defn, FIELD_CHAR_LIMITS["definition"])
+
+        if example := slide.get("example"):
+            flag("example", example, FIELD_CHAR_LIMITS["example"])
+
+        b_limit = FIELD_CHAR_LIMITS["bullet_long" if is_long else "bullet_short"]
+        for i, b in enumerate(slide.get("bullets", [])):
+            flag(f"bullet[{i+1}]", b, b_limit)
+
+        for i, ex in enumerate(slide.get("examples", [])):
+            d_limit = (FIELD_CHAR_LIMITS["rw_desc_long"] if is_long
+                       else FIELD_CHAR_LIMITS["rw_desc_short"])
+            flag(f"example[{i+1}].name", ex.get("name", ""),
+                 FIELD_CHAR_LIMITS["rw_name"])
+            flag(f"example[{i+1}].description", ex.get("description", ""), d_limit)
+
+        for i, q in enumerate(slide.get("questions", [])):
+            q_limit = (FIELD_CHAR_LIMITS["question_3q"] if is_3q else
+                       FIELD_CHAR_LIMITS["question_2q"] if is_2q else
+                       FIELD_CHAR_LIMITS["question_1q"])
+            a_limit = (FIELD_CHAR_LIMITS["answer_3q"] if is_3q else
+                       FIELD_CHAR_LIMITS["answer_2q"] if is_2q else
+                       FIELD_CHAR_LIMITS["answer_1q"])
+            flag(f"question[{i+1}].question", q.get("question", ""), q_limit)
+            flag(f"question[{i+1}].answer",   q.get("answer",   ""), a_limit)
+
+    if overflows:
+        print("\n  ⚠  CONTENT LENGTH WARNINGS — normAutofit will attempt to shrink "
+              "these but font may drop below 12pt:")
+        for msg in overflows:
+            print(msg)
+        print("     Consider regenerating the flagged slides with tighter content.\n")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1485,6 +1832,9 @@ def main():
             content_path.parent.mkdir(parents=True, exist_ok=True)
             content_path.write_text(json.dumps(content, indent=2), encoding="utf-8")
             print(f"  💾 Content saved to: {content_path}")
+
+    # ── Audit content lengths (12pt floor warning) ───────────────────────────
+    audit_content_lengths(content)
 
     # ── Assemble PowerPoint ───────────────────────────────────────────────────
     print("\n🔧 Assembling PowerPoint …")
